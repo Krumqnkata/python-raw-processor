@@ -1,0 +1,6 @@
+# Tested with 64-bit CPython 3.12. Use Python 3.11 or newer for the application.
+customtkinter==6.0.0
+rawpy==0.27.1
+opencv-python-headless==5.0.0.93
+numpy==2.3.5
+Pillow==12.3.0
