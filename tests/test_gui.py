@@ -188,6 +188,7 @@ def test_individual_edits_presets_history_and_clipboard(app,dng_path,tmp_path):
 
 def test_canvas_tools_zoom_clipping_and_thumbnails(app,dng_path):
     from types import SimpleNamespace
+    app.geometry('1100x720')  # Exercise the minimum supported window too.
     app._add_files([dng_path])
     pump(app,lambda:app._preview is not None and app._busy is None)
     app.compare_var.set('Плъзгач')
@@ -202,8 +203,10 @@ def test_canvas_tools_zoom_clipping_and_thumbnails(app,dng_path):
     def event(u,v):
         box,size,full = app._view_rects[label]
         scaling = label._get_widget_scaling()
-        x = (u*full[0]-box[0])/(box[2]-box[0])*size[0]*scaling
-        y = (v*full[1]-box[1])/(box[3]-box[1])*size[1]*scaling
+        # Coordinates are fractions of the visible viewport, not the full RAW.
+        # A 100% image may extend beyond a small/high-DPI Windows screen.
+        x = u*size[0]*scaling
+        y = v*size[1]*scaling
         return SimpleNamespace(x_root=label.winfo_rootx()+(label.winfo_width()-size[0]*scaling)/2+x,
                                y_root=label.winfo_rooty()+(label.winfo_height()-size[1]*scaling)/2+y)
     app._mouse_down(event(.45,.45),label)
