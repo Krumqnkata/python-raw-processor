@@ -1,0 +1,54 @@
+name: Windows installer
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements-build.txt -r requirements-dev.txt
+      - run: python tools/build_windows.py
+      - name: Create camera input for the bundled application
+        run: python -c "import runpy; from pathlib import Path; runpy.run_path('tests/conftest.py')['make_dng'](Path('package-test.DNG'))"
+      - name: Test portable application
+        shell: pwsh
+        run: |
+          $process = Start-Process dist/RAWStudio/RAWStudio.exe -ArgumentList '--smoke-test', 'package-test.DNG', 'portable-check' -PassThru -Wait
+          if ($process.ExitCode -ne 0 -or !(Test-Path portable-check/smoke.json)) { throw 'Portable application failed' }
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $compiler = Get-ChildItem 'C:/Program Files (x86)/Inno Setup */ISCC.exe' | Select-Object -First 1
+          if (!$compiler) {
+            choco install innosetup --yes --no-progress
+            $compiler = Get-ChildItem 'C:/Program Files (x86)/Inno Setup */ISCC.exe' | Select-Object -First 1
+          }
+          if (!$compiler) { throw 'Inno Setup compiler is unavailable' }
+          & $compiler.FullName packaging/windows.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+      - name: Install and test the installed application
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'RAW-Studio-installed'
+          $setup = Start-Process dist/installer/RAWStudio-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$target" -PassThru -Wait
+          if ($setup.ExitCode -ne 0) { throw 'Installation failed' }
+          $process = Start-Process "$target/RAWStudio.exe" -ArgumentList '--smoke-test', 'package-test.DNG', 'installed-check' -PassThru -Wait
+          if ($process.ExitCode -ne 0 -or !(Test-Path installed-check/smoke.json)) { throw 'Installed application failed' }
+          $uninstall = Start-Process "$target/unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($uninstall.ExitCode -ne 0) { throw 'Uninstall failed' }
+      - name: Portable zip
+        run: Compress-Archive -Path dist/RAWStudio -DestinationPath dist/RAWStudio-Portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RAWStudio-Windows
+          path: |
+            dist/installer/RAWStudio-Setup.exe
+            dist/RAWStudio-Portable.zip
+          retention-days: 30

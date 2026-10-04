@@ -1,9 +1,9 @@
-# RAW Studio 2 — validation
+# RAW Studio 3 — validation
 
 ## Automated checks
 
 - Python 3.12, Linux, actual LibRaw/OpenCV/Pillow, Tcl/Tk 8.6 under Xvfb.
-- 48 engine/batch/editor tests and 12 actual GUI tests: 60 checks in total.
+- 51 engine/batch/editor tests and 19 actual GUI tests: 70 checks in total.
 - Synthetic Bayer DNG is generated and genuinely decoded, rather than mocking RAW input.
 - Standalone/modular output equivalence, source synchronization and compile checks.
 - Actual dark/light screenshots captured and inspected; scrollable tab backgrounds
@@ -30,8 +30,8 @@
 
 ## CI
 
-`.github/workflows/tests.yml` runs all 48 backend/editor checks on Windows,
-Linux and macOS with Python 3.12. It also runs all 12 GUI checks on Windows and
+`.github/workflows/tests.yml` runs all 51 backend/editor checks on Windows,
+Linux and macOS with Python 3.12. It also runs all 19 GUI checks on Windows and
 Linux, each in a separate process to avoid Tcl interpreter teardown interference.
 
 ## Scope
@@ -43,3 +43,17 @@ is bundled. Profiles match camera/lens EXIF strings, not zoom/aperture calibrati
 Masks are evaluated after geometry; geometry changes alter their image-relative placement.
 PNG16 metadata embedding is tested without pixel requantization. NLM still uses an
 8-bit denoised residual, as required by the OpenCV colour NLM API.
+
+## Workflow and Windows bundle
+
+- Easy mode automatic import, mode switches preserving edits, ready export profiles.
+- Export requested while a preview worker is held starts after cooperative cancellation.
+- Native TkDnD loads; dropped file/folder paths with spaces are scanned in a worker.
+- Ctrl/Shift multi-selection, export inclusion and clickable star ratings.
+- Recovery roundtrip preserves masks, history and the original project path.
+- Shutdown queues the latest immutable snapshot behind an in-flight recovery write.
+- Inline export validation, retry only failed sources without duplicating successful files.
+- Exact numeric entry and compact 900x640 layout.
+- Preview decode cache invalidates on source changes; full exports decode afresh.
+- Windows workflow builds PyInstaller/ Inno Setup packages and tests portable export,
+  installed export and uninstall on an actual Windows runner.

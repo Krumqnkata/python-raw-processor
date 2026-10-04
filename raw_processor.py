@@ -3,6 +3,17 @@ import sys
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["--smoke-test"]:
+        try:
+            from packaging_smoke import smoke
+            smoke(*sys.argv[2:4])
+        except Exception:
+            import traceback
+            from pathlib import Path
+            directory=Path(sys.argv[3]);directory.mkdir(parents=True,exist_ok=True)
+            (directory/'smoke-error.txt').write_text(traceback.format_exc(),encoding='utf-8')
+            raise SystemExit(1)
+        return
     try:
         import cv2
         import customtkinter as ctk

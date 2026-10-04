@@ -335,7 +335,17 @@ class RawEngine:
                 cancel: threading.Event | None = None,
                 on_stage: StageCallback | None = None) -> PreviewResult:
         params, metadata = self._file_params(input_path, params, on_stage, cancel)
-        rgb16 = self.decode(input_path, params, draft=draft, cancel=cancel, on_stage=on_stage)
+        path = Path(input_path).resolve()
+        stat = path.stat()
+        key = (str(path),stat.st_size,stat.st_mtime_ns,params.white_balance=='auto',draft)
+        cached = getattr(self,'_preview_decode_cache',None)
+        if cached and cached[0]==key:
+            self._stage('Обновяване на корекциите…',on_stage,cancel)
+            rgb16 = cached[1]
+        else:
+            rgb16 = self.decode(path, params, draft=draft, cancel=cancel, on_stage=on_stage)
+            # Keep one bounded decode. Full exports always decode the source again.
+            self._preview_decode_cache = (key,rgb16) if rgb16.nbytes<=96*1024*1024 else None
         # Preview never applies export resizing. Exact mode retains pixels for 100% zoom.
         preview_params = replace(params, max_edge=0)
         before_rgb = geometry(lens_correct(self.linear_to_srgb(rgb16.astype(np.float32)/65535), params, lambda: check_cancel(cancel)), params)

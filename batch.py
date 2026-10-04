@@ -165,7 +165,7 @@ def run_batch(engine: RawEngine, files: list[Path], directory: Path,
                     failed += 1
                     row['status'] = 'failed'
                     row['error'] = str(error) or type(error).__name__
-                    emit('file_error',{'name':source.name,'error':row['error']})
+                    emit('file_error',{'name':source.name,'source':source,'error':row['error']})
                 else:
                     succeeded += 1
                     row['status'] = 'done'

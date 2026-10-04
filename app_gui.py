@@ -28,6 +28,8 @@ import rawpy
 from batch import discover_raws, run_batch, unique_inputs, FolderWatcher
 from studio import (EditSession, PhotoState, BUILTIN_PRESETS, EDIT_FIELDS, EXPORT_FIELDS,
                     save_preset, load_preset, save_lens_profile, load_lens_profile, read_json, params_from_dict)
+from experience import StudioExperience
+from workflow import COPY_GROUPS
 from imaging import LocalAdjustment
 from raw_engine import (ProcessingCancelled, ProcessingParams, RAW_EXTENSIONS,
                         RawEngine, PreviewResult)
@@ -59,14 +61,14 @@ class PreviewLabel(ctk.CTkLabel):
             super()._update_image()
 
 
-class AppGUI(ctk.CTk):
+class AppGUI(StudioExperience, ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("RAW Studio · Python RAW Processor")
         width = min(1380, max(1100, self.winfo_screenwidth() - 90))
         height = min(900, max(720, self.winfo_screenheight() - 100))
         self.geometry(f"{width}x{height}")
-        self.minsize(1100, 720)
+        self.minsize(900, 640)
         self.configure(fg_color=BG)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -147,10 +149,12 @@ class AppGUI(ctk.CTk):
         self.depth_var = tk.StringVar(value="16 бита")
         self.output_var = tk.StringVar(value="")
         self.selected_var = tk.StringVar(value="Няма избрани файлове")
-        self.compare_var = tk.StringVar(value="Сравнение")
+        self.compare_var = tk.StringVar(value="След")
+        self._init_experience()
 
         self._build_sidebar()
         self._build_main()
+        self._finish_experience()
         self._update_format()
         self._bind_editor_keys()
         self._watch_timer = self.after(500,self._drain_watch)
@@ -163,8 +167,7 @@ class AppGUI(ctk.CTk):
         return ctk.CTkLabel(parent, text=text, anchor="w", **kwargs)
 
     def _section(self, parent, text: str):
-        self._label(parent, text, font=ctk.CTkFont(size=13, weight="bold"),
-                    text_color=MUTED).pack(fill="x", padx=12, pady=(20, 8))
+        return self._accordion(parent, text)
 
     def _button(self, parent, text: str, command: Callable, **kwargs):
         button = ctk.CTkButton(parent, text=text, command=lambda:self._ui_action(command), height=35,
@@ -186,13 +189,15 @@ class AppGUI(ctk.CTk):
                 steps: int, formatter: Callable[[float], str]):
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", padx=12, pady=(7, 0))
-        self._label(row, title, font=ctk.CTkFont(size=12)).pack(side="left")
+        title_label = self._label(row, title, font=ctk.CTkFont(size=12))
+        title_label.pack(side="left")
         value_label = ctk.CTkLabel(row, text=formatter(initial), text_color=MUTED,
                                   font=ctk.CTkFont(size=12))
         value_label.pack(side="right")
 
         def changed(value: float) -> None:
             value_label.configure(text=formatter(value))
+            self._sync_simple_controls()
             self._schedule_preview()
 
         slider = ctk.CTkSlider(parent, from_=low, to=high, number_of_steps=steps,
@@ -201,10 +206,12 @@ class AppGUI(ctk.CTk):
         slider.pack(fill="x", padx=12, pady=(5, 7))
         self._setting_widgets.append(slider)
         self._slider_labels[slider] = (value_label,formatter)
+        self._decorate_slider(slider,value_label,title_label,title,initial,changed)
         return slider, value_label
 
     def _build_sidebar(self) -> None:
-        sidebar = ctk.CTkFrame(self,width=340,corner_radius=0,fg_color=CARD)
+        self._build_simple_sidebar()
+        self.advanced_sidebar = sidebar = ctk.CTkFrame(self,width=340,corner_radius=0,fg_color=CARD)
         sidebar.grid(row=0,column=0,sticky='nsew')
         sidebar.grid_propagate(False)
         sidebar.grid_columnconfigure(0,weight=1)
@@ -212,6 +219,7 @@ class AppGUI(ctk.CTk):
         brand = ctk.CTkFrame(sidebar,fg_color='transparent')
         brand.grid(row=0,column=0,sticky='ew',padx=20,pady=(16,4))
         self._label(brand,'RAW Studio',font=ctk.CTkFont(size=25,weight='bold')).pack(side='left')
+        ctk.CTkButton(brand,text='Лесен режим',width=95,command=lambda:self._set_mode('Лесен')).pack(side='right')
         tabs = ctk.CTkTabview(sidebar,fg_color=CARD,segmented_button_selected_color=ACCENT)
         tabs.grid(row=1,column=0,sticky='nsew',padx=4)
         panels = {}
@@ -223,7 +231,8 @@ class AppGUI(ctk.CTk):
             panel.grid(row=0,column=0,sticky='nsew')
             panels[name] = panel
         controls = panels['Редакция']
-        self._section(controls,'СНИМКИ И PRESETS')
+        edit_root = controls
+        controls = self._section(edit_root,'СНИМКИ И ГОТОВИ СТИЛОВЕ')
         self._button(controls,'+ Добави RAW файлове',self._choose_files,fg_color=ACCENT)
         self._button(controls,'Избери папка със снимки',self._choose_folder)
         self._switch(controls,'Включи подпапките',self.recursive_var,command=lambda:None,setting=False)
@@ -233,11 +242,14 @@ class AppGUI(ctk.CTk):
         preset = ctk.CTkOptionMenu(controls,values=list(BUILTIN_PRESETS),variable=self.preset_var,command=lambda name:self._ui_action(self._apply_builtin,name))
         preset.pack(fill='x',padx=12,pady=8)
         self._setting_widgets.append(preset)
-        self._button(controls,'Запази собствен preset…',self._save_preset)
-        self._button(controls,'Зареди preset…',self._load_preset)
+        self._button(controls,'Запази собствен стил…',self._save_preset)
+        self._button(controls,'Зареди стил…',self._load_preset)
         self._button(controls,'Копирай настройките',self._copy_settings)
+        self.copy_group_menu = ctk.CTkOptionMenu(controls,values=list(COPY_GROUPS),variable=self.copy_group_var)
+        self.copy_group_menu.pack(fill='x',padx=12,pady=4)
+        self._setting_widgets.append(self.copy_group_menu)
         self._button(controls,'Приложи към включените снимки',self._paste_settings)
-        self._section(controls,'БАЛАНС И СВЕТЛИНА')
+        controls = self._section(edit_root,'БАЛАНС И СВЕТЛИНА')
         self.wb_menu = ctk.CTkOptionMenu(controls,values=list(WB_LABELS),variable=self.wb_var,command=lambda _:self._schedule_preview())
         self.wb_menu.pack(fill='x',padx=12,pady=6)
         self._setting_widgets.append(self.wb_menu)
@@ -254,7 +266,7 @@ class AppGUI(ctk.CTk):
         self._switch(controls,'Локален контраст (CLAHE)',self.tone_var)
         self.tone_slider,_ = self._slider(controls,'Сила на CLAHE',0,1,.30,100,lambda v:f'{v:.0%}')
         self.clip_slider,_ = self._slider(controls,'CLAHE clip limit',.1,8,2,158,lambda v:f'{v:.2g}')
-        self._section(controls,'ДЕТАЙЛ')
+        controls = self._section(edit_root,'ДЕТАЙЛ')
         self._switch(controls,'Премахване на шум',self.denoise_var)
         self.noise_slider,_ = self._slider(controls,'Сила на филтъра',0,15,3,30,lambda v:f'{v:.1f}')
         self._switch(controls,'Изостряне',self.sharpen_var)
@@ -266,7 +278,8 @@ class AppGUI(ctk.CTk):
         self._switch(controls,'Покажи загубените тонове',self.clip_warning_var,command=self._render_preview)
 
         tools = panels['Маски']
-        self._section(tools,'ИЗРЯЗВАНЕ И ГЕОМЕТРИЯ')
+        tools_root = tools
+        tools = self._section(tools_root,'ИЗРЯЗВАНЕ И ГЕОМЕТРИЯ')
         self._label(tools,'Инструментът се използва върху снимката.',wraplength=260).pack(fill='x',padx=12)
         tool_menu = ctk.CTkOptionMenu(tools,values=['Местене','Изрязване','Пипетка','Четка','Градиент'],variable=self.tool_var,command=self._set_tool)
         tool_menu.pack(fill='x',padx=12,pady=8)
@@ -279,7 +292,7 @@ class AppGUI(ctk.CTk):
         self._button(tools,'Огледално вертикално',lambda:self._edit_change(flip_vertical=not self._params().flip_vertical))
         self._button(tools,'Възстанови целия кадър',lambda:self._edit_change(crop=(0,0,1,1)))
         self._extra_sliders['straighten'],_ = self._slider(tools,'Изправяне на хоризонта',-15,15,0,300,lambda v:f'{v:+.1f}°')
-        self._section(tools,'ЛОКАЛНИ КОРЕКЦИИ')
+        tools = self._section(tools_root,'ЛОКАЛНИ КОРЕКЦИИ')
         self.local_radius,_ = self._slider(tools,'Размер на четката',.005,.5,.08,99,lambda v:f'{v:.1%}')
         self.local_ev,_ = self._slider(tools,'Локална експозиция',-3,3,.5,120,lambda v:f'{v:+.2f} EV')
         self.local_shadows,_ = self._slider(tools,'Локални сенки',-1,1,0,100,lambda v:f'{v:+.2f}')
@@ -289,7 +302,7 @@ class AppGUI(ctk.CTk):
         self._button(tools,'Изтрий последната маска',lambda:self._edit_change(masks=self._params().masks[:-1]))
         self._button(tools,'Изтрий всички маски',lambda:self._edit_change(masks=()))
         self._label(tools,'Четка: рисувай с ляв бутон. Градиент: влачи от зона без корекция към зона с пълна корекция. Маските следват координатите на изрязания кадър.',wraplength=260,justify='left',text_color=MUTED).pack(fill='x',padx=12,pady=8)
-        self._section(tools,'КОРЕКЦИИ НА ОБЕКТИВА')
+        tools = self._section(tools_root,'КОРЕКЦИИ НА ОБЕКТИВА')
         self._switch(tools,'Включи корекциите',self.lens_var)
         self._switch(tools,'Автоматичен собствен профил',self.auto_lens_var)
         for key,title,low,high in [('lens_k1','Изкривяване k1',-.5,.5),('lens_k2','Изкривяване k2',-.5,.5),('vignette','Винетиране',-1,2),('ca_red','Червен цветен кант',-.02,.02),('ca_blue','Син цветен кант',-.02,.02)]:
@@ -298,11 +311,11 @@ class AppGUI(ctk.CTk):
         self._button(tools,'Запази профил за този обектив…',self._save_lens)
 
         export = panels['Експорт']
-        self._section(export,'ФОРМАТ И РАЗМЕР')
+        export = self._section(export,'ФОРМАТ И РАЗМЕР')
         self.format_control = ctk.CTkSegmentedButton(export,values=['JPG','PNG'],variable=self.format_var,command=self._update_format,selected_color=ACCENT)
         self.format_control.pack(fill='x',padx=12,pady=6)
         self._setting_widgets.append(self.format_control)
-        self.quality_slider,self.quality_label = self._slider(export,'Качество на JPG',1,100,92,99,lambda v:f'{round(v)}%')
+        self.quality_slider,self.quality_label = self._slider(export,'Качество на JPG',1,100,95,99,lambda v:f'{round(v)}%')
         self.compression_slider,self.compression_label = self._slider(export,'PNG компресия',0,9,4,9,lambda v:str(round(v)))
         self.depth_menu = ctk.CTkOptionMenu(export,values=['8 бита','16 бита'],variable=self.depth_var)
         self.depth_menu.pack(fill='x',padx=12,pady=7)
@@ -310,13 +323,15 @@ class AppGUI(ctk.CTk):
         self.format_hint = self._label(export,'',wraplength=260,justify='left',text_color=MUTED,font=ctk.CTkFont(size=11))
         self.format_hint.pack(fill='x',padx=12,pady=4)
         self._extra_sliders['max_edge'],_ = self._slider(export,'Дълга страна (0 = оригинал)',0,16000,0,160,lambda v:f'{round(v)} px')
-        edge_entry = ctk.CTkEntry(export,textvariable=self.max_edge_var,placeholder_text='Точен размер, например 2048')
+        self.edge_entry = edge_entry = ctk.CTkEntry(export,textvariable=self.max_edge_var,placeholder_text='Точен размер, например 2048')
         edge_entry.pack(fill='x',padx=12,pady=4)
         self._setting_widgets.append(edge_entry)
         self._extra_sliders['max_edge'].configure(command=lambda value:self._set_edge(value))
         self._label(export,'Шаблон за име',text_color=MUTED).pack(fill='x',padx=12,pady=(12,4))
-        naming = ctk.CTkEntry(export,textvariable=self.template_var)
+        self.naming_entry = naming = ctk.CTkEntry(export,textvariable=self.template_var)
         naming.pack(fill='x',padx=12,pady=4)
+        self.export_error = self._label(export,'',text_color='#ed7878',wraplength=260)
+        self.export_error.pack(fill='x',padx=12)
         self._setting_widgets.append(naming)
         self._label(export,'{stem} · {index:04d} · {date} · {camera}',text_color=MUTED,font=ctk.CTkFont(size=10)).pack(fill='x',padx=12)
         self._switch(export,'Запази избрани EXIF данни',self.preserve_exif_var,command=lambda:None)
@@ -332,7 +347,8 @@ class AppGUI(ctk.CTk):
         self._button(export,'Продължи запазена серия…',self._resume_batch)
 
         project = panels['Проект']
-        self._section(project,'ПРОЕКТ И ИСТОРИЯ')
+        project_root = project
+        project = self._section(project_root,'ПРОЕКТ И ИСТОРИЯ')
         self._button(project,'Запази проект…',self._save_project)
         self._button(project,'Отвори проект…',self._load_project)
         self._button(project,'Отмени (Ctrl+Z)',self._undo)
@@ -340,7 +356,7 @@ class AppGUI(ctk.CTk):
         self._button(project,'Нулирай редакциите',lambda:self._replace_edit(ProcessingParams()))
         self.project_label = self._label(project,'Няма отворен проект',wraplength=260,text_color=MUTED)
         self.project_label.pack(fill='x',padx=12,pady=10)
-        self._section(project,'НАБЛЮДАВАНА ПАПКА')
+        project = self._section(project_root,'НАБЛЮДАВАНА ПАПКА')
         self._button(project,'Избери папка за автоматичен експорт…',self._start_watch)
         self.watch_stop = self._button(project,'Спри наблюдението',self._stop_watch)
         self.watch_label = self._label(project,'Наблюдението е изключено.',wraplength=260,text_color=MUTED)
@@ -350,8 +366,9 @@ class AppGUI(ctk.CTk):
         self.metadata_box.configure(state='disabled')
         footer = ctk.CTkFrame(sidebar,fg_color='transparent')
         footer.grid(row=2,column=0,sticky='ew',padx=18,pady=12)
-        self.start_button = ctk.CTkButton(footer,text='Експортирай включените снимки',height=40,fg_color=ACCENT,command=self._start_batch)
+        self.start_button = ctk.CTkButton(footer,text='Експортирай включените снимки',height=40,fg_color=ACCENT,command=self._request_export)
         self.start_button.pack(fill='x')
+        self._export_buttons.append(self.start_button)
         self._locked_widgets.append(self.start_button)
         self.theme_menu = ctk.CTkOptionMenu(footer,values=['Тъмна тема','Светла тема','Системна тема'],command=self._change_theme,height=26)
         self.theme_menu.set('Тъмна тема')
@@ -368,8 +385,7 @@ class AppGUI(ctk.CTk):
         header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         self._label(header, "ПРЕДВАРИТЕЛЕН ПРЕГЛЕД", text_color=MUTED,
                     font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
-        self._label(header, "RAW → JPG / PNG", text_color=ACCENT,
-                    font=ctk.CTkFont(size=12)).pack(side="right")
+        self._build_workspace_header(header)
 
         selection = ctk.CTkFrame(main, fg_color="transparent")
         selection.grid(row=1, column=0, sticky="ew", pady=(0, 12))
@@ -382,6 +398,7 @@ class AppGUI(ctk.CTk):
         self.preview_button = ctk.CTkButton(selection, text="Обнови прегледа", width=150,
                                            command=self._request_preview)
         self.preview_button.grid(row=0, column=1)
+        self.selection_panel = selection
         self._locked_widgets.append(self.preview_button)
         self.preview_switch = ctk.CTkSwitch(selection, text="Точен преглед (по-бавен)",
                                             variable=self.exact_preview_var,
@@ -405,7 +422,7 @@ class AppGUI(ctk.CTk):
         self.after_image_label.configure(text="Автоматични корекции\nс пълен контрол")
         self.preview_card.bind("<Configure>", self._preview_resized)
         self.preview_info = self._label(main, "Размерът за експорт се избира в раздел Експорт.",
-                                        text_color=MUTED, font=ctk.CTkFont(size=11))
+                                        text_color=MUTED, font=ctk.CTkFont(size=11),height=18)
         self.preview_info.grid(row=3, column=0, sticky="ew", pady=(8, 14))
 
         toolbar = ctk.CTkFrame(main,fg_color='transparent')
@@ -417,10 +434,12 @@ class AppGUI(ctk.CTk):
         self.split_slider = ctk.CTkSlider(toolbar,from_=0,to=1,number_of_steps=100,command=lambda _:self._render_preview(),width=130)
         self.split_slider.set(.5)
         self.split_slider.pack(side='right',padx=4)
-        self._label(toolbar,'Преди / След',text_color=MUTED).pack(side='right')
+        self.split_hint = self._label(toolbar,'Преди / След',text_color=MUTED)
+        self.split_hint.pack(side='right')
         self._build_gallery(main)
+        self._build_welcome_and_report(main)
 
-        progress_card = ctk.CTkFrame(main, fg_color=CARD, corner_radius=10)
+        self.progress_card = progress_card = ctk.CTkFrame(main, fg_color=CARD, corner_radius=10)
         progress_card.grid(row=4, column=0, sticky="ew", pady=(0, 14))
         progress_card.grid_columnconfigure(0, weight=1)
         self.status_label = self._label(progress_card, "Готов за работа", font=ctk.CTkFont(size=13))
@@ -438,7 +457,7 @@ class AppGUI(ctk.CTk):
         self.progress.grid(row=2, column=0, columnspan=3, sticky="ew", padx=16, pady=(5, 14))
         self.progress.set(0)
 
-        log_header = ctk.CTkFrame(main, fg_color="transparent")
+        self.log_header = log_header = ctk.CTkFrame(main, fg_color="transparent")
         log_header.grid(row=5, column=0, sticky="ew", pady=(0, 6))
         self._label(log_header, "ДНЕВНИК", text_color=MUTED,
                     font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
@@ -459,7 +478,7 @@ class AppGUI(ctk.CTk):
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(1, weight=1)
         self._label(frame, title, text_color=MUTED,
-                    font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, sticky="ew", pady=8)
+                    font=ctk.CTkFont(size=11, weight="bold"),height=18).grid(row=0, column=0, sticky="ew", pady=4)
         label = PreviewLabel(frame, text="", text_color=MUTED, corner_radius=8,
                              fg_color=("#eef1f5", "#131a22"), font=ctk.CTkFont(size=15))
         label.grid(row=1, column=0, sticky="nsew")
@@ -547,7 +566,7 @@ class AppGUI(ctk.CTk):
     def _add_files(self, files: list[Path]) -> None:
         old_count = len(self.files)
         current_params = self._params()
-        self.session.defaults = replace(ProcessingParams(),**{k:getattr(current_params,k) for k in EDIT_FIELDS | EXPORT_FIELDS})
+        self.session.defaults = self._import_defaults(current_params)
         self.session.add(files)
         self.files = unique_inputs([*self.files, *files])
         self._file_choices = {f"{i:03d} · {path.name}": path for i, path in enumerate(self.files, 1)}
@@ -566,6 +585,7 @@ class AppGUI(ctk.CTk):
             self._active_path = str(self._file_choices[self.selected_var.get()])
             self._load_params(self.session.photos[self._active_path].params)
         self._refresh_gallery()
+        self._update_experience()
         if self.files:
             self._pending_preview = True
             self._schedule_preview()
@@ -591,6 +611,11 @@ class AppGUI(ctk.CTk):
         self.preview_info.configure(text="Размерът за експорт се избира в раздел Експорт.")
         self._refresh_gallery()
         self.hist_canvas.delete('all')
+        self._selected_photos.clear()
+        self._last_selected_index = None
+        self._selection_anchor = None
+        self._project_dirty = True
+        self._update_experience()
         self._log("Списъкът е изчистен.")
 
     def _choose_output(self) -> None:
@@ -611,23 +636,30 @@ class AppGUI(ctk.CTk):
             self._load_params(self.session.photos[self._active_path].params)
         self._center = (.5,.5)
         self._metadata = {}
-        self._preview = None
-        self._batch_preview = None
-        self._images.clear()
-        self.before_image_label.configure(image=None, text="Зареждане…")
-        self.after_image_label.configure(image=None, text="Зареждане…")
+        self._displayed_path = None
+        if self._preview is None and self._batch_preview is None:
+            self._images.clear()
+            self.before_image_label.configure(image=None, text="Зареждане…")
+            self.after_image_label.configure(image=None, text="Зареждане…")
         self.preview_info.configure(text="Зареждане на избраната снимка…")
+        self._refresh_gallery()
         self._schedule_preview()
 
     def _schedule_preview(self) -> None:
+        if self._ux_ready and not self._loading:self._update_experience()
         if self._loading or self._closing or not self.files or self._busy in {"batch", "scan"}:
             return
         self._pending_preview = True
+        self._quick_preview_pending = True
         if self._busy == "preview":
             self._cancel.set()
         if self._preview_timer:
             self.after_cancel(self._preview_timer)
         self._preview_timer = self.after(400, self._request_preview)
+
+    def _refine_preview(self):
+        self._quick_preview_pending = False
+        self._request_preview()
 
     def _request_preview(self) -> None:
         self._preview_timer = None
@@ -646,7 +678,8 @@ class AppGUI(ctk.CTk):
         except ValueError as error:
             messagebox.showerror("Настройки", str(error), parent=self)
             return
-        draft = not self.exact_preview_var.get()
+        draft = not self.exact_preview_var.get() or getattr(self,"_quick_preview_pending",False)
+        self._quick_preview_pending = False
         self._pending_preview = False
 
         def generate(emit, cancel):
@@ -663,6 +696,7 @@ class AppGUI(ctk.CTk):
                 emit("job_done", {})
 
         self._launch("preview", generate)
+        self.preview_info.configure(text=f"{path.name} · Обновяване на прегледа…")
         self.status_label.configure(text=f"Преглед: {path.name}")
 
     def _launch(self, kind: str, target: Callable) -> None:
@@ -693,6 +727,7 @@ class AppGUI(ctk.CTk):
             widget.configure(state='disabled' if self._busy in {'batch','scan'} or self._closing else 'normal')
         self.pause_button.configure(state='normal' if self._busy=='batch' and not self._closing else 'disabled')
         self._update_format()
+        self._refresh_experience_enabled()
 
     def _start_batch(self, *, files_override=None, resume=False) -> None:
         if self._busy:
@@ -714,6 +749,8 @@ class AppGUI(ctk.CTk):
             messagebox.showerror("Настройки", str(error), parent=self)
             return
         self._commit_current()
+        self._failed_files = []
+        self.report_card.grid_remove()
         self.session.add(self.files)
         files = files_override if files_override is not None else [p.path for p in self.session.photos.values() if p.included]
         if not files:
@@ -759,12 +796,22 @@ class AppGUI(ctk.CTk):
             if token not in {-1,self._job_id}:
                 continue
             self._handle_event(event, data)
-        if self._closing and not (self._worker and self._worker.is_alive()):
+        if self._closing and not (self._worker and self._worker.is_alive()) and not (self._autosave_worker and self._autosave_worker.is_alive()):
             self.destroy()
             return
         self._poll_id = self.after(70, self._poll_events)
 
     def _handle_event(self, event: str, data: dict) -> None:
+        if event == "autosaved":
+            self._saved_snapshot = data["snapshot"]
+            self.autosave_label.configure(text=f"Автоматично запазено · {datetime.now():%H:%M:%S}")
+            if self._autosave_next:
+                snapshot,self._autosave_next = self._autosave_next,None
+                self._write_recovery_snapshot(snapshot)
+            return
+        if event == "autosave_error":
+            self._log("Автоматичното запазване не успя: "+data["error"],"error")
+            return
         if event == 'thumbnail':
             if data['epoch']==self._thumb_epoch and data['path'] in self._gallery_buttons:
                 image = ctk.CTkImage(light_image=data['image'],dark_image=data['image'],size=data['image'].size)
@@ -797,6 +844,7 @@ class AppGUI(ctk.CTk):
             # A changed slider can cancel a result already in the Queue.
             if not self._cancel.is_set():
                 self._preview = data["result"]
+                self._displayed_path = self._active_path
                 self._batch_preview = None
                 self._render_preview()
                 result = self._preview
@@ -806,6 +854,8 @@ class AppGUI(ctk.CTk):
                 self.metadata_box.delete('1.0','end')
                 self.metadata_box.insert('end','\n'.join(f'{k}: {v}' for k,v in self._metadata.items()) or 'Няма достъпни EXIF данни.')
                 self.metadata_box.configure(state='disabled')
+                if result.draft and self.exact_preview_var.get() and not self._pending_preview:
+                    self._preview_timer = self.after(600,self._refine_preview)
                 mode = "Бърз, приблизителен преглед" if result.draft else "Обработен в пълна резолюция"
                 self.preview_info.configure(text=f"{result.name} · {result.dimensions[0]} × {result.dimensions[1]} · {mode}")
         elif event == "preview_error":
@@ -826,6 +876,7 @@ class AppGUI(ctk.CTk):
                 self.preview_info.configure(text=f"Запазено: {result.output_path.name} · {result.dimensions[0]} × {result.dimensions[1]}")
         elif event == "file_error":
             self._log(f"Грешка {data['name']}: {data['error']}", "error")
+            if data.get("source"): self._failed_files.append(Path(data["source"]))
         elif event == "fatal_error":
             self._log(f"Обработката не може да продължи: {data['error']}", "error")
         elif event == "progress":
@@ -839,6 +890,7 @@ class AppGUI(ctk.CTk):
             status = f"{title} · готови: {summary.succeeded} · грешки: {summary.failed} · {summary.seconds:.1f} s"
             self.status_label.configure(text=status)
             self._log(status, "success" if not stopped and not summary.failed else "")
+            self._show_report(summary)
             self._finish_job(preserve_status=True)
         elif event == "job_done":
             self._finish_job()
@@ -850,6 +902,16 @@ class AppGUI(ctk.CTk):
         self._refresh_enabled()
         if not preserve_status and not self._closing:
             self.status_label.configure(text="Спряно" if self._cancel.is_set() else "Готов за работа")
+        self._update_experience()
+        if not self._closing and self._queued_drop:
+            paths,self._queued_drop = self._queued_drop,[]
+            self._import_paths(paths)
+            return
+        if not self._closing and self._export_pending:
+            self._export_pending = False
+            override,self._export_override = self._export_override,None
+            self._request_export(files_override=override)
+            return
         if not self._closing and self.files and self._pending_preview:
             self._schedule_preview()
         elif previous_kind == "scan" and self.files and not self._cancel.is_set():
@@ -893,6 +955,10 @@ class AppGUI(ctk.CTk):
         label.configure(image=image,text='')
 
     def _render_preview(self) -> None:
+        if self.compare_var.get()=="Плъзгач":
+            self.split_slider.pack(side="right",padx=4);self.split_hint.pack(side="right")
+        else:
+            self.split_slider.pack_forget();self.split_hint.pack_forget()
         self._resize_timer = None
         if self._closing:
             return
@@ -943,7 +1009,10 @@ class AppGUI(ctk.CTk):
     def _on_close(self) -> None:
         if self._closing:
             return
+        self._save_recovery()
+        self._save_preferences()
         self._closing = True
+        if self._autosave_timer: self.after_cancel(self._autosave_timer)
         self._pending_preview = False
         self._cancel.set()
         self._watch_cancel.set()
@@ -954,7 +1023,7 @@ class AppGUI(ctk.CTk):
             if timer:
                 self.after_cancel(timer)
         self._preview_timer = self._resize_timer = None
-        if self._worker and self._worker.is_alive():
+        if (self._worker and self._worker.is_alive()) or (self._autosave_worker and self._autosave_worker.is_alive()):
             self.status_label.configure(text="Затваряне след текущата операция…")
             self._refresh_enabled()
         else:
@@ -970,6 +1039,8 @@ class AppGUI(ctk.CTk):
             changed = photo.params != params
             photo.set_params(params)
             self._project_dirty |= changed
+            if changed and self._active_path in self._gallery_buttons:
+                self._gallery_buttons[self._active_path].configure(text=photo.path.name[:18]+(" •" if photo.cursor else ""))
         self.session.defaults = params
         self.session.output = self.output_var.get()
         self.session.selected = self._active_path or ''
@@ -1003,6 +1074,7 @@ class AppGUI(ctk.CTk):
             self._update_format()
         finally:
             self._loading = False
+            self._sync_simple_controls()
 
     def _replace_edit(self, params):
         if self._busy in {'batch','scan'}:
@@ -1042,8 +1114,8 @@ class AppGUI(ctk.CTk):
     def _copy_settings(self):
         self._commit_current()
         p = self._params()
-        self._clipboard = {k:getattr(p,k) for k in EDIT_FIELDS}
-        self._log('Копирани настройки за светлина, цвят, детайл и обектив.')
+        self._clipboard = {k:getattr(p,k) for k in COPY_GROUPS[self.copy_group_var.get()]}
+        self._log('Копирани настройки: '+self.copy_group_var.get())
 
     def _paste_settings(self):
         if not self._clipboard:
@@ -1084,6 +1156,7 @@ class AppGUI(ctk.CTk):
             try:
                 self.session.save(path)
                 self._project_dirty = False
+                self._remember_project(path)
                 self.project_label.configure(text=Path(path).name)
                 self._log('Запазен проект: '+path)
             except (OSError,ValueError) as error: messagebox.showerror('Проект',str(error),parent=self)
@@ -1110,6 +1183,7 @@ class AppGUI(ctk.CTk):
         self.project_label.configure(text=Path(path).name)
         missing = [p.path.name for p in session.photos.values() if not p.path.is_file()]
         if missing: self._log('Липсващи оригинали: '+', '.join(missing),'error')
+        self._remember_project(path)
         self._log('Проектът е възстановен, включително историята и локалните маски.')
 
     def _save_lens(self):
@@ -1143,6 +1217,9 @@ class AppGUI(ctk.CTk):
         hints = {'Изрязване':'Влачи върху кадъра за изрязване.', 'Пипетка':'Щракни върху неутрално сива област в прегледа ПРЕДИ.',
                  'Четка':'Рисувай с ляв бутон; всяко движение добавя локална маска.',
                  'Градиент':'Влачи от 0% към 100% локална корекция.','Местене':'Колелце: увеличение. Ляв бутон: местене на увеличената снимка.'}
+        cursor = 'crosshair' if value!='Местене' else 'hand2'
+        for label in [self.before_image_label,self.after_image_label]: label._label.configure(cursor=cursor)
+        self.tool_hint.configure(text=hints[value])
         self._log(hints[value])
 
     def _set_zoom(self, value):
@@ -1176,7 +1253,7 @@ class AppGUI(ctk.CTk):
         return max(0,min(1,u)),max(0,min(1,v))
 
     def _mouse_down(self,event,label):
-        if not self._preview or self._busy in {'batch','scan'}: return
+        if not self._preview or self._busy in {'batch','scan'} or self._displayed_path != self._active_path: return
         point = self._point(event,label)
         if point is None: return
         self._drag_origin = point
@@ -1217,7 +1294,7 @@ class AppGUI(ctk.CTk):
         self._render_preview()
 
     def _mouse_up(self,event,label):
-        if not self._preview or self._busy in {'batch','scan'}: return
+        if not self._preview or self._busy in {'batch','scan'} or self._displayed_path != self._active_path: return
         points = tuple(self._stroke)
         self._stroke = []
         self._drag_origin = None
@@ -1252,57 +1329,14 @@ class AppGUI(ctk.CTk):
         self.hist_label.configure(text=f"Черно: {data['shadows']:.1%} · Светлини: {data['highlights']:.1%}")
 
     def _build_gallery(self,parent):
-        outer = ctk.CTkFrame(parent,fg_color=CARD,corner_radius=8)
-        outer.grid(row=7,column=0,sticky='ew',pady=(8,0))
-        top = ctk.CTkFrame(outer,fg_color='transparent')
-        top.pack(fill='x',padx=8,pady=2)
-        ctk.CTkButton(top,text='◀',width=32,height=22,command=lambda:self._gallery_step(-1)).pack(side='left')
-        ctk.CTkButton(top,text='▶',width=32,height=22,command=lambda:self._gallery_step(1)).pack(side='left',padx=4)
-        self.gallery_label = self._label(top,'Галерия',text_color=MUTED,font=ctk.CTkFont(size=11))
-        self.gallery_label.pack(side='left',padx=6)
-        for title,action in [('Всички',lambda:self._set_all_included(True)),('Нито една',lambda:self._set_all_included(False)),('Текущата',self._include_current_only)]:
-            ctk.CTkButton(top,text=title,width=65,height=22,command=action).pack(side='left',padx=2)
-        ctk.CTkCheckBox(top,text='Само любими (★ ≥ 1)',variable=self.favorite_filter_var,command=lambda:self._refresh_gallery(reset=True),height=20,font=ctk.CTkFont(size=11)).pack(side='right')
-        self.gallery = ctk.CTkScrollableFrame(outer,orientation='horizontal',height=95,fg_color='transparent')
-        self.gallery.pack(fill='x',padx=4,pady=2)
+        self._build_experience_gallery(parent)
 
     def _gallery_step(self, delta):
         self._gallery_page = max(0,self._gallery_page+delta)
         self._refresh_gallery()
 
     def _refresh_gallery(self,reset=False):
-        if reset: self._gallery_page = 0
-        self._thumb_cancel.set()
-        self._thumb_epoch += 1
-        self._gallery_buttons.clear()
-        self._gallery_controls.clear()
-        for widget in self.gallery.winfo_children(): widget.destroy()
-        photos = [p for p in self.session.photos.values() if not self.favorite_filter_var.get() or p.rating>0]
-        page_count = max(1,math.ceil(len(photos)/40))
-        self._gallery_page = min(self._gallery_page,page_count-1)
-        page = photos[self._gallery_page*40:(self._gallery_page+1)*40]
-        included_count = sum(p.included for p in self.session.photos.values())
-        self.start_button.configure(text=f'Експортирай {included_count} снимки')
-        self.gallery_label.configure(text=f'{len(photos)} снимки · стр. {self._gallery_page+1}/{page_count}')
-        for photo in page:
-            cell = ctk.CTkFrame(self.gallery,width=105,fg_color='transparent')
-            cell.pack(side='left',padx=3)
-            key = str(photo.path)
-            thumb = self._thumb_cache.get(key)
-            image = ctk.CTkImage(light_image=thumb,dark_image=thumb,size=thumb.size) if thumb else None
-            button = ctk.CTkButton(cell,text=photo.path.name[:17],width=100,height=52,image=image,compound='top',font=ctk.CTkFont(size=10),command=lambda path=photo.path:self._ui_action(self._select_photo,path))
-            button._thumbnail = image
-            button.pack(fill='x')
-            self._gallery_buttons[key] = button
-            included = tk.BooleanVar(value=photo.included)
-            check = ctk.CTkCheckBox(cell,text='Експорт',width=62,height=18,checkbox_width=14,checkbox_height=14,variable=included,font=ctk.CTkFont(size=10),command=lambda ph=photo,v=included:self._set_included(ph,v.get()))
-            check.pack(side='left',pady=3)
-            rating = ctk.CTkOptionMenu(cell,values=['0','1','2','3','4','5'],width=40,height=20,font=ctk.CTkFont(size=10),command=lambda value,ph=photo:self._set_rating(ph,int(value)))
-            rating.set(str(photo.rating))
-            rating.pack(side='right',pady=3)
-            self._gallery_controls.extend([button,check,rating])
-            if self._busy in {'batch','scan'}:
-                for widget in [button,check,rating]: widget.configure(state='disabled')
+        page = self._populate_gallery(reset)
         epoch = self._thumb_epoch
         paths = [p.path for p in page if str(p.path) not in self._thumb_cache]
         if self._gallery_timer: self.after_cancel(self._gallery_timer)
@@ -1328,7 +1362,7 @@ class AppGUI(ctk.CTk):
                             else: image=Image.fromarray(thumb.data)
                         except rawpy.LibRawNoThumbnailError:
                             image=Image.fromarray(raw.postprocess(half_size=True,use_camera_wb=True))
-                    image.thumbnail((84,42),Image.Resampling.LANCZOS)
+                    image.thumbnail((84,32),Image.Resampling.LANCZOS)
                     if not cancel.is_set(): self.events.put((-1,'thumbnail',{'epoch':epoch,'path':str(path),'image':image}))
                 except Exception:
                     continue
@@ -1346,8 +1380,9 @@ class AppGUI(ctk.CTk):
         if self._busy=='batch': return
         photo.included = value
         count = sum(p.included for p in self.session.photos.values())
-        self.start_button.configure(text=f'Експортирай {count} снимки')
+        self._update_experience()
         self._project_dirty = True
+        self._refresh_gallery()
 
     def _set_rating(self, photo, rating):
         photo.rating = rating

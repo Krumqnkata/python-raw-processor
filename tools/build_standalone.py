@@ -11,7 +11,7 @@ def without_local_imports(source: str) -> str:
     remove = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom) and node.module in {
-            '__future__', 'raw_engine', 'batch', 'app_gui', 'imaging', 'metadata', 'studio',
+            '__future__', 'raw_engine', 'batch', 'app_gui', 'imaging', 'metadata', 'studio', 'workflow', 'experience', 'packaging_smoke',
         }:
             remove.update(range(node.lineno - 1, node.end_lineno))
     return ''.join(line for index, line in enumerate(lines) if index not in remove)
@@ -22,7 +22,7 @@ def build(check=False):
         '"""RAW Studio: complete standalone application. Generated from the modular project."""\n',
         'from __future__ import annotations\n',
     ]
-    for name in ['imaging.py', 'metadata.py', 'raw_engine.py', 'studio.py', 'batch.py', 'app_gui.py', 'raw_processor.py']:
+    for name in ['imaging.py', 'metadata.py', 'raw_engine.py', 'studio.py', 'batch.py', 'workflow.py', 'experience.py', 'app_gui.py', 'packaging_smoke.py', 'raw_processor.py']:
         parts.append(f'\n# ---------- {name} ----------\n')
         parts.append(without_local_imports((ROOT / name).read_text(encoding='utf-8')))
     target = ROOT / 'RAW_Studio.py'

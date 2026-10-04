@@ -219,3 +219,51 @@ def test_standalone_matches_modular_pipeline(dng_path,tmp_path):
     assert modular.dimensions==bundled.dimensions
     np.testing.assert_array_equal(cv2.imread(str(modular.output_path),cv2.IMREAD_UNCHANGED),
                                   cv2.imread(str(bundled.output_path),cv2.IMREAD_UNCHANGED))
+
+
+def test_recovery_snapshot_preserves_origin_and_frozen_edits(tmp_path, dng_path):
+    from workflow import session_snapshot, write_snapshot
+    from studio import EditSession, read_json
+    from raw_engine import ProcessingParams
+    session=EditSession();session.add([dng_path]);photo=session.photos[str(dng_path)]
+    photo.set_params(replace(photo.params,exposure_ev=.75));photo.rating=4
+    session.project_path=tmp_path/'original.rawstudio';session.selected=str(dng_path)
+    recovery=tmp_path/'settings'/'recovery.rawstudio'
+    snapshot=session_snapshot(session,recovery)
+    photo.set_params(replace(photo.params,exposure_ev=-.5))
+    write_snapshot(snapshot)
+    restored=EditSession.load(recovery)
+    assert restored.photos[str(dng_path)].params.exposure_ev==.75
+    assert restored.photos[str(dng_path)].rating==4
+    assert restored.photos[str(dng_path)].undo().exposure_ev==0
+    assert session.project_path==tmp_path/'original.rawstudio'
+    assert read_json(recovery)['project_origin']==str(session.project_path)
+
+
+def test_preview_cache_updates_corrections_and_invalidates_source(dng_path, tmp_path):
+    from raw_engine import RawEngine, ProcessingParams
+    import os
+    class Counted(RawEngine):
+        count=0
+        def decode(self,*args,**kwargs):
+            self.count+=1
+            return super().decode(*args,**kwargs)
+    engine=Counted();params=ProcessingParams()
+    first=engine.preview(dng_path,params)
+    second=engine.preview(dng_path,replace(params,exposure_ev=-1))
+    assert engine.count==1 and first.after.tobytes()!=second.after.tobytes()
+    stat=dng_path.stat();os.utime(dng_path,ns=(stat.st_atime_ns,stat.st_mtime_ns+1000000))
+    engine.preview(dng_path,params)
+    assert engine.count==2
+    engine.process_file(dng_path,tmp_path/'output.jpg',params)
+    assert engine.count==3
+
+
+def test_automatic_workflow_preserves_geometry_and_export():
+    from workflow import automatic_params, EXPORT_PRESETS
+    from raw_engine import ProcessingParams
+    original=ProcessingParams(exposure_ev=1.5,temperature=.4,crop=(.1,.1,.9,.9),rotation=1,max_edge=123)
+    result=automatic_params(original)
+    assert result.auto_exposure and result.tone_mapping and result.exposure_ev==0
+    assert result.crop==original.crop and result.rotation==1 and result.max_edge==123
+    assert replace(result,**EXPORT_PRESETS['За последваща обработка']).png_bit_depth==16

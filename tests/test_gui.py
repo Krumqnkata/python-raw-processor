@@ -24,7 +24,8 @@ def pump(app, condition, timeout=15):
 
 
 @pytest.fixture
-def app():
+def app(tmp_path, monkeypatch):
+    monkeypatch.setenv('RAW_STUDIO_CONFIG_DIR',str(tmp_path/'preferences'))
     import customtkinter as ctk
     from app_gui import AppGUI
     ctk.set_appearance_mode('Dark')
@@ -358,3 +359,129 @@ def test_invalid_export_values_show_message_and_preserve_selection(app,dng_path,
     app.template_var.set('../{stem}')
     app._ui_action(app._apply_builtin,'Естествено')
     assert len(errors)==3 and 'шаблон' in errors[-1]
+
+
+def test_easy_import_auto_correct_export_and_modes(app,dng_path,tmp_path):
+    second=tmp_path/'second.DNG';second.write_bytes(dng_path.read_bytes())
+    app.exposure_slider.set(1.2)
+    app._add_files([dng_path,second])
+    assert app.mode_var.get()=='Лесен'
+    assert all(p.params.auto_exposure and p.params.exposure_ev==0 for p in app.session.photos.values())
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    app._simple_changed('shadows',.25)
+    app._set_mode('Разширен');assert app._params().shadows==.25
+    app._set_mode('Лесен');assert app._params().shadows==.25
+    app._apply_export_preset('За споделяне');assert app._params().quality==90
+    app.output_var.set(str(tmp_path/'result'));app._request_export()
+    pump(app,lambda:app._busy is None and not app._export_pending)
+    assert len(list((tmp_path/'result').glob('*.jpg')))==2
+    assert '2 готови' in app.report_label.cget('text')
+    assert not app._details_visible
+
+
+def test_export_requested_during_preview_is_completed(app,dng_path,tmp_path):
+    from raw_engine import RawEngine
+    entered,release=threading.Event(),threading.Event()
+    class Held(RawEngine):
+        def preview(self,*args,**kwargs):
+            entered.set();assert release.wait(5)
+            return super().preview(*args,**kwargs)
+    app.engine=Held();app._add_files([dng_path]);pump(app,entered.is_set)
+    app.output_var.set(str(tmp_path/'export'));app._request_export()
+    assert app._export_pending and app.simple_export_button.cget('state')=='disabled'
+    release.set();pump(app,lambda:(tmp_path/'export'/'synthetic.jpg').is_file() and app._busy is None)
+    assert not app._export_pending and app.progress.get()==1
+
+
+def test_drop_paths_with_spaces_selection_and_stars(app,dng_path,tmp_path):
+    from types import SimpleNamespace
+    folder=tmp_path/'camera photos';folder.mkdir()
+    second=folder/'second photo.DNG';second.write_bytes(dng_path.read_bytes())
+    third=folder/'third.DNG';third.write_bytes(dng_path.read_bytes())
+    assert app._drop_available
+    assert app._drop_files(SimpleNamespace(data=f'{{{dng_path}}} {{{folder}}}'))=='copy'
+    pump(app,lambda:len(app.files)==3 and app._busy is None and not app._pending_preview)
+    app._gallery_click(dng_path,ctrl=False,shift=False)
+    app._gallery_click(third,ctrl=False,shift=True)
+    assert len(app._selected_photos)==3
+    app._include_selected(False);assert not any(p.included for p in app.session.photos.values())
+    app._gallery_click(second,ctrl=False,shift=False);app._include_selected(True)
+    assert sum(p.included for p in app.session.photos.values())==1
+    photo=app.session.photos[str(second)];app._rating_clicked(photo,4);assert photo.rating==4
+    app._rating_clicked(photo,4);assert photo.rating==0
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+
+
+def test_autosave_restore_keeps_masks_history_and_original_project(app,dng_path,tmp_path):
+    from raw_engine import ProcessingParams
+    from dataclasses import replace
+    from imaging import LocalAdjustment
+    app._add_files([dng_path]);pump(app,lambda:app._preview is not None and app._busy is None)
+    app.session.project_path=tmp_path/'my-project.rawstudio'
+    app._edit_change(exposure_ev=.6,masks=(LocalAdjustment(kind='brush',points=((.5,.5),)),))
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+    app._save_recovery();pump(app,lambda:app._saved_snapshot is not None)
+    assert app.session.project_path==tmp_path/'my-project.rawstudio'
+    app._clear_files();app._open_project_path(app._autosave_path,recovery=True)
+    assert app._params().exposure_ev==.6 and len(app._params().masks)==1
+    assert app.session.project_path==tmp_path/'my-project.rawstudio'
+    app._undo();assert app._params().exposure_ev==0 and not app._params().masks
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+
+
+def test_inline_validation_and_retry_only_failed_files(app,dng_path,tmp_path):
+    broken=tmp_path/'broken.DNG';broken.write_bytes(b'not a raw')
+    app._add_files([dng_path,broken]);pump(app,lambda:app._preview is not None and app._busy is None)
+    app.output_var.set(str(tmp_path/'export'));app.max_edge_var.set('wrong');app._request_export()
+    assert app._busy is None and app.simple_export_error.cget('text')
+    assert app.edge_entry.cget('border_color')=='#ed7878'
+    app.max_edge_var.set('0');app._request_export();pump(app,lambda:app._busy is None)
+    assert '1 готови' in app.report_label.cget('text') and len(app._failed_files)==1
+    broken.write_bytes(dng_path.read_bytes());app._retry_failed();pump(app,lambda:app._busy is None)
+    outputs=list((tmp_path/'export').glob('*.jpg'))
+    assert {p.name for p in outputs}=={'synthetic.jpg','broken.jpg'}
+
+
+def test_numeric_entry_exact_value_and_small_window(app,dng_path):
+    app._add_files([dng_path]);pump(app,lambda:app._preview is not None and app._busy is None)
+    slider,label=app._simple_sliders['exposure_ev']
+    slider.master.pack(fill='x');app.update()
+    app.focus_force();app.update()
+    app._edit_numeric(slider,label,lambda value:app._simple_changed('exposure_ev',value),'Яркост')
+    app.update()
+    entry=next(w for w in label.master.winfo_children() if w.winfo_class()=='Frame' and hasattr(w,'get'))
+    entry._entry.focus_force();app.update()
+    entry.delete(0,'end');entry.insert(0,'0.37');entry._entry.event_generate('<Return>');app.update()
+    assert app._params().exposure_ev==.37
+    app.geometry('900x640');app.update();app._responsive_layout()
+    assert app.compare_control.grid_info()['column']==0
+    assert app.after_image_label.winfo_height()>=120
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+
+
+def test_shutdown_waits_for_latest_recovery_snapshot(app,dng_path,monkeypatch):
+    import experience
+    from studio import EditSession
+    from dataclasses import replace
+    entered,release=threading.Event(),threading.Event()
+    original=experience.write_snapshot
+    calls=[]
+    def hold_first(snapshot):
+        calls.append(snapshot)
+        if len(calls)==1:
+            entered.set();assert release.wait(5)
+        original(snapshot)
+    monkeypatch.setattr(experience,'write_snapshot',hold_first)
+    app._add_files([dng_path]);pump(app,lambda:app._preview is not None and app._busy is None)
+    app._save_recovery();pump(app,entered.is_set)
+    app.exposure_slider.set(.8);app._commit_current();app._on_close()
+    assert app._autosave_next is not None
+    release.set()
+    deadline=time.monotonic()+10
+    while time.monotonic()<deadline:
+        try:app.update()
+        except Exception:pass
+        if len(calls)==2 and not app._autosave_worker.is_alive():break
+        time.sleep(.01)
+    restored=EditSession.load(app._autosave_path)
+    assert len(calls)==2 and restored.photos[str(dng_path)].params.exposure_ev==.8

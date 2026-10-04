@@ -17,3 +17,7 @@ processed/
 *.nef
 *.arw
 *.dng
+
+build/
+dist/
+*.spec
