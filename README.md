@@ -192,6 +192,10 @@ xvfb-run -a python -m pytest -q
 Без графичен дисплей GUI тестовете се пропускат; тестовете на двигателя и
 пакетната обработка работят без прозорец.
 
+На Windows стартирай GUI проверките с `python tools/check_gui.py`. На Linux
+използвай `xvfb-run -a python tools/check_gui.py`. Скриптът изпълнява всеки тест
+в отделен процес, за да не се пренася Tk състояние между тестовете.
+
 В `.github/workflows/tests.yml` има готов workflow за Python 3.12 на
 Windows, Linux и macOS, с GUI проверки на Linux и Windows. Той ще се изпълнява, след
 като качиш проекта в избрано GitHub хранилище. Самият workflow не е изпълняван
