@@ -1,41 +1,44 @@
-# Проверки на проекта
+# RAW Studio 2 — validation
 
-Проверено локално на Linux с 64-битов CPython 3.12.14.
+## Local checks
 
-**Резултат след поправката на прегледа: 32 успешни теста.**
+- Python 3.12, Linux, actual LibRaw/OpenCV/Pillow, Tcl/Tk 8.6 under Xvfb.
+- 48 engine/batch/editor tests and 11 actual GUI tests: 59 checks in total.
+- Synthetic Bayer DNG is generated and genuinely decoded, rather than mocking RAW input.
+- Standalone/modular output equivalence, source synchronization and compile checks.
+- Actual dark/light screenshots captured and inspected; scrollable tab backgrounds
+  explicitly follow appearance changes.
 
-GUI проверките са изпълнени с Tk 9.0 и повторени успешно с Tk 8.6.
-Интерфейсът е прегледан визуално в тъмна тема; в пакета има действителни
-екранни снимки на двете теми с генериран тестов DNG.
+## Behaviour covered
 
-Проверките включват:
+- Linear decoding, exposure/CLAHE, colour and monochrome, 16-bit output precision.
+- Separate shadows/highlights, normalized brush/gradient masks, crop/rotation/reflection.
+- Lens identity/correction/cancellation, matching own camera/lens profiles.
+- Per-photo settings, presets preserving geometry, clipboard, Undo/Redo branches.
+- Atomic projects restoring masks, ratings, inclusion, histories and selected photo.
+- Exact preview dimensions, export resizing/aspect ratio, file naming validation.
+- Selected EXIF fields and normalized orientation, PNG16 unchanged by metadata insertion.
+- Corrupt RAW continuation, filename collisions and RAW original preservation.
+- Cancel/pause boundaries, resumed exports skipping completed unchanged files.
+- Watcher excludes initial files and waits for a stable copy before auto-export.
+- GUI heartbeat during a held worker; Tk event handlers remain on the main thread.
+- GUI neutral-patch eyedropper, brush/gradient/crop, reversed crop drag, split comparison and thumbnails.
+- 100% preview accounts for display scaling; exact rendering retains full image pixels.
+- Native Tk images are detached on clear/switch, preventing deleted pyimage references.
+- GUI project roundtrip, real threaded watcher, paused export and journal restoration.
 
-- Генериран Bayer DNG, декодиран от действителния `rawpy`/LibRaw.
-- Четирите режима за баланс на бялото и нормални/черни/светли изображения.
-- JPG и PNG8 експорт с правилна RGB/BGR последователност.
-- PNG16 експорт, който запазва повече от 256 нива на канал.
-- Шумопотискане и изостряне, включително запазване на фината точност.
-- Защита от презаписване, повредено запазване и премахване на временните файлове.
-- Търсене на RAW файлове с главни/малки разширения и подпапки.
-- Дублирани входове и едноименни изходи от различни RAW формати/папки.
-- Продължаване на серия след повреден RAW и верен прогрес.
-- Спиране преди старт и между две снимки.
-- Истински GUI преглед и PNG експорт, смяна на тема и режим на сравнение.
-- Работещ GUI таймер, докато нишката за обработка е задържана на контролирана бариера.
-- RAW обработка извън главната нишка и доставка на GUI събития само в главната нишка.
-- Последователни промени на настройките и преглед след последната промяна.
-- Изчистване на списъка и смяна на снимката, последвани от нов преглед след
-  освобождаване на старите изображения от garbage collector.
+## CI
 
-Поправката изчиства и нативния Tk image атрибут при `image=None`.
-Двата нови теста възпроизвеждат проблема в предишния код и минават след
-поправката. GitHub workflow вече изпълнява GUI проверките и на Windows.
-GUI тестовете в CI се стартират в отделни Python процеси, както приложението,
-за да не споделят Tk интерпретатори между независими проверки.
+`.github/workflows/tests.yml` runs all 48 backend/editor checks on Windows,
+Linux and macOS with Python 3.12. It also runs all 11 GUI checks on Windows and
+Linux, each in a separate process to avoid Tcl interpreter teardown interference.
 
-Самостоятелният `RAW_Studio.py` е генериран, компилиран и импортиран успешно.
-`pip check` не установи несъвместими зависимости в средата за проверка.
+## Scope
 
-Не са предоставени реални RAW снимки от фотоапарат. Не са изпълнявани локално
-Windows/macOS проверки или каченият като шаблон GitHub workflow. Съвместимостта
-с конкретен фотоапарат трябва да бъде проверена с реална негова снимка.
+Real CR2/NEF/ARW/CR3 camera samples were not supplied. Camera-specific decoding,
+colour intent and visual lens calibration still depend on the user's files.
+Lens corrections use manual coefficients/own profiles; no factory profile database
+is bundled. Profiles match camera/lens EXIF strings, not zoom/aperture calibration.
+Masks are evaluated after geometry; geometry changes alter their image-relative placement.
+PNG16 metadata embedding is tested without pixel requantization. NLM still uses an
+8-bit denoised residual, as required by the OpenCV colour NLM API.

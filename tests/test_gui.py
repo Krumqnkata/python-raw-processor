@@ -144,3 +144,193 @@ def test_cleared_preview_can_display_another_image(app, clear_action):
     app.update()
     for label in [before, after]:
         assert str(label._label.cget('image')) in app.tk.call('image', 'names')
+
+
+def test_individual_edits_presets_history_and_clipboard(app,dng_path,tmp_path):
+    from pathlib import Path
+    second = tmp_path/'second.DNG'
+    second.write_bytes(dng_path.read_bytes())
+    app._add_files([dng_path,second])
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    app.exposure_slider.set(.8)
+    app._schedule_preview()
+    app._select_photo(second)
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    assert app._params().exposure_ev==0
+    app._apply_builtin('Черно-бяло')
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+    assert app._params().monochrome
+    app._undo()
+    assert not app._params().monochrome
+    app._redo()
+    assert app._params().monochrome
+    app._select_photo(dng_path)
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    assert app._params().exposure_ev==.8
+    assert not app._params().monochrome
+    app._copy_settings()
+    app._paste_settings()
+    assert app.session.photos[str(second)].params.exposure_ev==.8
+    assert not app.session.photos[str(second)].params.monochrome
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+    app.max_edge_var.set('173')
+    app.template_var.set('event_{index:04d}_{stem}')
+    app.output_var.set(str(tmp_path/'out'))
+    app._start_batch()
+    pump(app,lambda:app._busy is None)
+    outputs = sorted((tmp_path/'out').glob('*.jpg'))
+    assert len(outputs)==2
+    from PIL import Image
+    for path in outputs:
+        with Image.open(path) as image: assert max(image.size)==173
+    assert outputs[0].name.startswith('event_0001_')
+
+
+def test_canvas_tools_zoom_clipping_and_thumbnails(app,dng_path):
+    from types import SimpleNamespace
+    app._add_files([dng_path])
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    app.compare_var.set('Плъзгач')
+    app.split_slider.set(.35)
+    app._render_preview()
+    app._set_zoom(1)
+    pump(app,lambda:app._preview is not None and not app._preview.draft and app._busy is None)
+    app.clip_warning_var.set(True)
+    app._render_preview()
+    app._set_tool('Четка')
+    label = app.after_image_label
+    def event(u,v):
+        box,size,full = app._view_rects[label]
+        scaling = label._get_widget_scaling()
+        x = (u*full[0]-box[0])/(box[2]-box[0])*size[0]*scaling
+        y = (v*full[1]-box[1])/(box[3]-box[1])*size[1]*scaling
+        return SimpleNamespace(x_root=label.winfo_rootx()+(label.winfo_width()-size[0]*scaling)/2+x,
+                               y_root=label.winfo_rooty()+(label.winfo_height()-size[1]*scaling)/2+y)
+    app._mouse_down(event(.45,.45),label)
+    app._mouse_drag(event(.55,.55),label)
+    app._mouse_up(event(.55,.55),label)
+    assert len(app._params().masks)==1
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+    app._set_tool('Градиент')
+    app._mouse_down(event(.45,.45),label)
+    app._mouse_drag(event(.6,.6),label)
+    app._mouse_up(event(.6,.6),label)
+    assert len(app._params().masks)==2
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+    app._set_tool('Изрязване')
+    app._mouse_down(event(.6,.6),label)  # Reverse drag must also work.
+    app._mouse_drag(event(.4,.4),label)
+    app._mouse_up(event(.4,.4),label)
+    assert app._params().crop!=(0,0,1,1)
+    pump(app,lambda:app._busy is None and not app._pending_preview)
+    app._set_zoom(None)
+    pump(app,lambda:bool(app._thumb_cache),timeout=20)
+    assert str(dng_path) in app._thumb_cache
+
+
+def test_gui_project_roundtrip(app,dng_path,tmp_path,monkeypatch):
+    from app_gui import filedialog
+    project = tmp_path/'test.rawstudio'
+    app._add_files([dng_path])
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    app.exposure_slider.set(-.7)
+    app._commit_current()
+    app.session.photos[str(dng_path)].rating=5
+    monkeypatch.setattr(filedialog,'asksaveasfilename',lambda **_:str(project))
+    app._save_project()
+    app._clear_files()
+    monkeypatch.setattr(filedialog,'askopenfilename',lambda **_:str(project))
+    app._load_project()
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    assert app._params().exposure_ev==-.7
+    assert app.session.photos[str(dng_path)].rating==5
+    app._undo()
+    assert app._params().exposure_ev==0
+
+
+def test_pause_resume_and_watcher_export_in_gui(app,dng_path,tmp_path,monkeypatch):
+    from app_gui import filedialog
+    from batch import FolderWatcher
+    from raw_engine import RawEngine
+    entered,release = threading.Event(),threading.Event()
+    class BarrierEngine(RawEngine):
+        def process_file(self,*args,**kwargs):
+            entered.set()
+            assert release.wait(5)
+            return super().process_file(*args,**kwargs)
+    app.engine=BarrierEngine()
+    app.files=[dng_path]
+    app.output_var.set(str(tmp_path/'export'))
+    app._start_batch()
+    pump(app,entered.is_set)
+    app._toggle_pause()
+    assert app._pause.is_set() and app.pause_button.cget('text')=='Продължи'
+    release.set()
+    heartbeat=[]
+    app.after(10,lambda:heartbeat.append(True))
+    pump(app,lambda:bool(heartbeat))
+    assert app._busy=='batch'
+    app._toggle_pause()
+    pump(app,lambda:app._busy is None)
+    assert (tmp_path/'export'/'synthetic.jpg').is_file()
+    journal=tmp_path/'export'/'raw-studio-batch.json'
+    monkeypatch.setattr(filedialog,'askopenfilename',lambda **_:str(journal))
+    app.engine=RawEngine()
+    app._resume_batch()
+    pump(app,lambda:app._busy is None)
+    assert len(list((tmp_path/'export').glob('*.jpg')))==1
+    watched=tmp_path/'watched'
+    watched.mkdir()
+    # Short interval for the real watcher thread, not a mocked arrival event.
+    original=FolderWatcher.__init__
+    watchers=[]
+    def fast(self,folder,recursive=False,interval=2):
+        original(self,folder,recursive,.05)
+        watchers.append(self)
+    monkeypatch.setattr(FolderWatcher,'__init__',fast)
+    monkeypatch.setattr(filedialog,'askdirectory',lambda **_:str(watched))
+    app._start_watch()
+    pump(app,lambda:bool(watchers) and watchers[0].initialized)
+    incoming=watched/'incoming.DNG'
+    incoming.write_bytes(dng_path.read_bytes())
+    pump(app,lambda:(tmp_path/'export'/'incoming.jpg').is_file() and app._busy is None,timeout=20)
+    app._stop_watch()
+    assert app._watch_cancel.is_set()
+
+
+def test_preview_100_percent_respects_display_scaling(app,dng_path):
+    import customtkinter as ctk
+    ctk.set_widget_scaling(1.5)
+    try:
+        app._add_files([dng_path])
+        pump(app,lambda:app._preview is not None and app._busy is None)
+        app._set_zoom(1)
+        pump(app,lambda:app._preview is not None and not app._preview.draft and app._busy is None)
+        app.compare_var.set('След')
+        app._render_preview()
+        box,size,full=app._view_rects[app.after_image_label]
+        scale=app.after_image_label._get_widget_scaling()
+        assert abs(size[0]*scale-(box[2]-box[0]))<=2
+        assert abs(size[1]*scale-(box[3]-box[1]))<=2
+    finally:
+        ctk.set_widget_scaling(1)
+
+
+def test_white_balance_eyedropper_applies_neutral_rgb_gains(app,dng_path):
+    from PIL import Image
+    from types import SimpleNamespace
+    app._add_files([dng_path])
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    app.wb_var.set('Gray World')
+    app._preview.before=Image.new('RGB',(400,300),(140,130,120))
+    app._set_tool('Пипетка')
+    app.update_idletasks()
+    label=app.before_image_label
+    event=SimpleNamespace(x_root=label.winfo_rootx()+label.winfo_width()/2,
+                          y_root=label.winfo_rooty()+label.winfo_height()/2)
+    app._mouse_down(event,label)
+    params=app._params()
+    assert params.white_balance=='camera'
+    assert params.wb_gains[0]<1<params.wb_gains[2]
+    assert params.temperature==0 and params.tint==0
+    pump(app,lambda:app._busy is None and not app._pending_preview)

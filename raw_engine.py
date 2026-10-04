@@ -5,7 +5,7 @@ the explicit OpenCV export/denoising boundary.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 import math
@@ -18,6 +18,9 @@ import cv2
 import numpy as np
 import rawpy
 from PIL import Image
+from imaging import (LocalAdjustment, tonal, colour, local_adjustments, lens_correct,
+                     geometry, resize_export, histogram)
+from metadata import read_metadata, exif_bytes, embed_exif
 
 RAW_EXTENSIONS = frozenset({
     ".3fr", ".arw", ".cr2", ".cr3", ".crw", ".dng", ".erf", ".fff",
@@ -48,7 +51,54 @@ class ProcessingParams:
     png_compression: int = 4
     png_bit_depth: int = 16
 
+    shadows: float = 0.0
+    highlights: float = 0.0
+    whites: float = 0.0
+    blacks: float = 0.0
+    saturation: float = 1.0
+    vibrance: float = 0.0
+    temperature: float = 0.0
+    tint: float = 0.0
+    wb_gains: tuple[float, float, float] = (1., 1., 1.)
+    monochrome: bool = False
+    rotation: int = 0
+    straighten: float = 0.0
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
+    crop: tuple[float, float, float, float] = (0., 0., 1., 1.)
+    masks: tuple[LocalAdjustment, ...] = ()
+    lens_enabled: bool = False
+    auto_lens: bool = False
+    lens_k1: float = 0.0
+    lens_k2: float = 0.0
+    vignette: float = 0.0
+    ca_red: float = 0.0
+    ca_blue: float = 0.0
+    max_edge: int = 0
+    filename_template: str = '{stem}'
+    preserve_exif: bool = False
+    exif_camera: bool = True
+    exif_date: bool = True
+    exif_exposure: bool = True
+
     def __post_init__(self) -> None:
+        for name in ['auto_exposure','tone_mapping','denoise','sharpen','monochrome','flip_horizontal','flip_vertical','lens_enabled','auto_lens','preserve_exif','exif_camera','exif_date','exif_exposure']:
+            if type(getattr(self,name)) is not bool:
+                raise ValueError('Невалиден превключвател: '+name)
+        object.__setattr__(self, 'crop', tuple(self.crop))
+        object.__setattr__(self, 'wb_gains', tuple(self.wb_gains))
+        object.__setattr__(self, 'masks', tuple(self.masks))
+        if len(self.crop) != 4 or any(not math.isfinite(v) or not 0 <= v <= 1 for v in self.crop) or not (self.crop[0] < self.crop[2] and self.crop[1] < self.crop[3]):
+            raise ValueError('Невалидно изрязване.')
+        if len(self.wb_gains) != 3 or any(not math.isfinite(v) or not .25 <= v <= 4 for v in self.wb_gains):
+            raise ValueError('Невалидни коефициенти за бялото.')
+        if len(self.masks) > 100 or any(not isinstance(m, LocalAdjustment) for m in self.masks):
+            raise ValueError('Невалидни локални маски (максимум 100).')
+        if type(self.rotation) is not int or not 0 <= self.rotation <= 3:
+            raise ValueError('Невалидно завъртане.')
+        if type(self.max_edge) is not int or not 0 <= self.max_edge <= 16000:
+            raise ValueError('Дългата страна трябва да е 0–16000 px.')
+        validate_template(self.filename_template)
         if self.white_balance not in {"camera", "auto", "gray_world", "shades_of_gray"}:
             raise ValueError("Непознат метод за баланс на бялото.")
         if self.output_format not in {"jpg", "png"}:
@@ -60,10 +110,15 @@ class ProcessingParams:
             ("tone_strength", 0.0, 1.0), ("denoise_strength", 0.0, 15.0),
             ("sharpen_amount", 0.0, 2.0), ("quality", 1, 100),
             ("png_compression", 0, 9),
+            ('shadows', -1, 1), ('highlights', -1, 1), ('whites', -1, 1), ('blacks', -1, 1),
+            ('saturation', 0, 2), ('vibrance', -1, 1), ('temperature', -1, 1), ('tint', -1, 1),
+            ('straighten', -15, 15), ('lens_k1', -.5, .5), ('lens_k2', -.5, .5),
+            ('vignette', -1, 2), ('ca_red', -.02, .02), ('ca_blue', -.02, .02),
         ]:
             value = getattr(self, name)
             if not math.isfinite(value) or not low <= value <= high:
                 raise ValueError(f"Невалидна стойност за {name}: {value}")
+            if isinstance(value,float): object.__setattr__(self,name,round(value,6))
         if type(self.quality) is not int or type(self.png_compression) is not int:
             raise ValueError("Качеството и PNG компресията трябва да са цели числа.")
 
@@ -75,6 +130,8 @@ class PreviewResult:
     name: str
     dimensions: tuple[int, int]
     draft: bool = True
+    metadata: dict | None = None
+    histogram: dict | None = None
 
 
 @dataclass
@@ -88,6 +145,21 @@ class ProcessResult:
 def check_cancel(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
         raise ProcessingCancelled()
+
+
+def validate_template(template):
+    import string
+    if not isinstance(template,str) or not template or len(template)>120:
+        raise ValueError('Невалиден шаблон за име.')
+    try:
+        for _,field,spec,conversion in string.Formatter().parse(template):
+            if field is not None and (field not in {'stem','index','date','camera'} or conversion or (spec and (field != 'index' or spec not in {'02d','03d','04d','05d','06d'}))):
+                raise ValueError('Използвай {stem}, {index:04d}, {date}, {camera}.')
+        rendered = template.format(stem='photo',index=1,date='20261004',camera='camera')
+        if any(c in rendered for c in '/\\<>:"|?*') or any(ord(c)<32 for c in rendered) or rendered.strip(' .') != rendered or not rendered:
+            raise ValueError('Името съдържа забранени символи.')
+    except ValueError as error:
+        raise ValueError('Невалиден шаблон за име: '+str(error)) from error
 
 
 class RawEngine:
@@ -215,6 +287,8 @@ class RawEngine:
         if params.white_balance in {"gray_world", "shades_of_gray"}:
             self._stage("Баланс на бялото…", on_stage, cancel)
             rgb = self._white_balance(rgb, params.white_balance)
+        gains = np.asarray(params.wb_gains,np.float32) * np.exp(np.array([params.temperature*.5,-params.tint*.35,-params.temperature*.5],np.float32))
+        rgb = np.clip(rgb*gains,0,1)
         if params.auto_exposure or params.exposure_ev:
             self._stage("Експозиция и светлини…", on_stage, cancel)
             rgb = self._exposure(rgb, params.exposure_ev, params.auto_exposure)
@@ -223,6 +297,12 @@ class RawEngine:
         if params.tone_mapping and params.tone_strength > 0:
             self._stage("CLAHE върху L канала…", on_stage, cancel)
             srgb = self._tone_map(srgb, params.clahe_clip, params.tone_strength)
+        srgb = tonal(srgb, params.shadows, params.highlights, params.whites, params.blacks)
+        srgb = colour(srgb, params.saturation, params.vibrance, params.monochrome)
+        srgb = lens_correct(srgb, params, lambda: check_cancel(cancel))
+        srgb = geometry(srgb, params)
+        srgb = local_adjustments(srgb, params.masks, lambda: check_cancel(cancel))
+        srgb = resize_export(srgb, params.max_edge)
         if params.denoise and params.denoise_strength > 0:
             self._stage("Премахване на шум…", on_stage, cancel)
             # This specific OpenCV function requires 8-bit BGR input.
@@ -254,14 +334,35 @@ class RawEngine:
     def preview(self, input_path: str | Path, params: ProcessingParams, *, draft: bool = True,
                 cancel: threading.Event | None = None,
                 on_stage: StageCallback | None = None) -> PreviewResult:
+        params, metadata = self._file_params(input_path, params, on_stage, cancel)
         rgb16 = self.decode(input_path, params, draft=draft, cancel=cancel, on_stage=on_stage)
-        before = self._preview_image(self.linear_to_srgb(rgb16.astype(np.float32) / 65535))
-        corrected = self.apply_corrections(rgb16, params, cancel=cancel, on_stage=on_stage)
-        return PreviewResult(before, self._preview_image(corrected), Path(input_path).name,
-                             (rgb16.shape[1], rgb16.shape[0]), draft)
+        # Preview never applies export resizing. Exact mode retains pixels for 100% zoom.
+        preview_params = replace(params, max_edge=0)
+        before_rgb = geometry(lens_correct(self.linear_to_srgb(rgb16.astype(np.float32)/65535), params, lambda: check_cancel(cancel)), params)
+        corrected = self.apply_corrections(rgb16, preview_params, cancel=cancel, on_stage=on_stage)
+        size = (corrected.shape[1], corrected.shape[0])
+        bound = (1400,1000) if draft else size
+        before = self._preview_image(before_rgb, bound)
+        after = self._preview_image(corrected, bound)
+        return PreviewResult(before, after, Path(input_path).name, size, draft, metadata, histogram(after))
+
+    @staticmethod
+    def _file_params(path, params, on_stage=None, cancel=None):
+        try:
+            metadata = read_metadata(path)
+        except Exception as error:
+            metadata = {}
+            if on_stage: on_stage('EXIF данните не могат да се прочетат: '+str(error))
+        if params.auto_lens:
+            from studio import match_lens_profile
+            params, name = match_lens_profile(Path.home()/'.raw-studio'/'lenses', metadata, params)
+            if on_stage: on_stage('Профил за обектив: '+name if name else 'Няма съвпадащ профил; използвам ръчните настройки за обектива.')
+        check_cancel(cancel)
+        return params, metadata
 
     def save_image(self, srgb: np.ndarray, output_path: str | Path, params: ProcessingParams,
-                   *, overwrite: bool = False, cancel: threading.Event | None = None) -> Path:
+                   *, overwrite: bool = False, cancel: threading.Event | None = None,
+                   metadata: dict | None = None) -> Path:
         """Encode first, then atomically publish; never leave a partial final file.
 
         Exclusive creation of a placeholder reserves new filenames against another
@@ -284,13 +385,16 @@ class RawEngine:
         success, encoded = cv2.imencode(extension, cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR), options)
         if not success:
             raise OSError("Неуспешно кодиране на изображението.")
+        payload = encoded.tobytes()
+        if params.preserve_exif:
+            payload = embed_exif(payload, extension, exif_bytes(metadata or {}, params, (srgb.shape[1],srgb.shape[0])))
         reserved = False
         temp_name: str | None = None
         try:
             with tempfile.NamedTemporaryFile(prefix=".raw-export-", suffix=".tmp",
                                              dir=destination.parent, delete=False) as temporary:
                 temp_name = temporary.name
-                temporary.write(encoded.tobytes())
+                temporary.write(payload)
                 temporary.flush()
                 os.fsync(temporary.fileno())
             check_cancel(cancel)
@@ -317,11 +421,12 @@ class RawEngine:
         started = time.perf_counter()
         if Path(input_path).expanduser().resolve() == Path(output_path).expanduser().resolve():
             raise ValueError("Входният RAW файл не може да бъде изходен файл.")
+        params, metadata = self._file_params(input_path, params, on_stage, cancel)
         rgb16 = self.decode(input_path, params, cancel=cancel, on_stage=on_stage)
         corrected = self.apply_corrections(rgb16, params, cancel=cancel, on_stage=on_stage)
         self._stage("Запазване…", on_stage, cancel)
         destination = self.save_image(corrected, output_path, params,
-                                      overwrite=overwrite, cancel=cancel)
+                                      overwrite=overwrite, cancel=cancel, metadata=metadata)
         preview = self._preview_image(corrected) if include_preview else None
         return ProcessResult(destination, (corrected.shape[1], corrected.shape[0]),
                              time.perf_counter() - started, preview)

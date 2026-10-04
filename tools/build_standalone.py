@@ -1,5 +1,6 @@
 """Assemble a single-script distribution from the canonical modular sources."""
 import ast
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,25 +11,31 @@ def without_local_imports(source: str) -> str:
     remove = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom) and node.module in {
-            '__future__', 'raw_engine', 'batch', 'app_gui',
+            '__future__', 'raw_engine', 'batch', 'app_gui', 'imaging', 'metadata', 'studio',
         }:
             remove.update(range(node.lineno - 1, node.end_lineno))
     return ''.join(line for index, line in enumerate(lines) if index not in remove)
 
 
-def build():
+def build(check=False):
     parts = [
         '"""RAW Studio: complete standalone application. Generated from the modular project."""\n',
         'from __future__ import annotations\n',
     ]
-    for name in ['raw_engine.py', 'batch.py', 'app_gui.py', 'raw_processor.py']:
+    for name in ['imaging.py', 'metadata.py', 'raw_engine.py', 'studio.py', 'batch.py', 'app_gui.py', 'raw_processor.py']:
         parts.append(f'\n# ---------- {name} ----------\n')
         parts.append(without_local_imports((ROOT / name).read_text(encoding='utf-8')))
     target = ROOT / 'RAW_Studio.py'
-    target.write_text(''.join(parts), encoding='utf-8')
-    print(target)
+    source = ''.join(parts)
+    if check:
+        if not target.is_file() or target.read_text(encoding='utf-8') != source:
+            raise SystemExit('RAW_Studio.py is stale. Run python tools/build_standalone.py.')
+        print('Standalone sources are in sync.')
+    else:
+        target.write_text(source, encoding='utf-8')
+        print(target)
     return target
 
 
 if __name__ == '__main__':
-    build()
+    build(check='--check' in sys.argv)

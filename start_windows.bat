@@ -9,14 +9,14 @@ if not exist ".venv\Scripts\python.exe" (
         exit /b 1
     )
 )
-if not exist ".venv\raw-studio-deps-v1" (
+if not exist ".venv\raw-studio-deps-v2" (
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 (
         echo Dependency installation failed. Check the message above.
         pause
         exit /b 1
     )
-    type nul > ".venv\raw-studio-deps-v1"
+    type nul > ".venv\raw-studio-deps-v2"
 )
 ".venv\Scripts\python.exe" raw_processor.py
 if errorlevel 1 pause
