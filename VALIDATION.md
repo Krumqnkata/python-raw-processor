@@ -1,6 +1,6 @@
 # RAW Studio 2 — validation
 
-## Local checks
+## Automated checks
 
 - Python 3.12, Linux, actual LibRaw/OpenCV/Pillow, Tcl/Tk 8.6 under Xvfb.
 - 48 engine/batch/editor tests and 12 actual GUI tests: 60 checks in total.
