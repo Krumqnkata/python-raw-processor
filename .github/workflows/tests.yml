@@ -26,3 +26,6 @@ jobs:
       - name: Check actual GUI (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a python -m pytest -q tests/test_gui.py
+      - name: Check actual GUI (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest -q tests/test_gui.py

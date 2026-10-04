@@ -1,11 +1,16 @@
 """Actual Tk smoke/concurrency checks; use xvfb-run on Linux CI."""
 import os
+import gc
+import sys
 import threading
 import time
 
 import pytest
 
-pytestmark = pytest.mark.skipif(not os.environ.get('DISPLAY'), reason='Requires a graphical display')
+pytestmark = pytest.mark.skipif(
+    sys.platform != 'win32' and not os.environ.get('DISPLAY'),
+    reason='Requires a graphical display',
+)
 
 
 def pump(app, condition, timeout=15):
@@ -119,3 +124,23 @@ def test_preview_changes_coalesce_without_stale_results(app, dng_path):
     expected = app.engine.preview(dng_path, ProcessingParams(exposure_ev=-1)).after
     np.testing.assert_allclose(np.asarray(app._preview.after).astype(float),
                                np.asarray(expected).astype(float), atol=1)
+
+
+@pytest.mark.parametrize('clear_action', ['_selection_changed', '_clear_files'])
+def test_cleared_preview_can_display_another_image(app, clear_action):
+    from PIL import Image
+    before = app.before_image_label
+    after = app.after_image_label
+    app._display_image(before, Image.new('RGB', (120, 80), 'red'))
+    app._display_image(after, Image.new('RGB', (120, 80), 'green'))
+    app.update()
+    getattr(app, clear_action)()
+    gc.collect()
+    # Reset must detach the native Tk image too, before its Python owner dies.
+    assert str(before._label.cget('image')) == ''
+    assert str(after._label.cget('image')) == ''
+    app._display_image(before, Image.new('RGB', (120, 80), 'blue'))
+    app._display_image(after, Image.new('RGB', (120, 80), 'yellow'))
+    app.update()
+    for label in [before, after]:
+        assert str(label._label.cget('image')) in app.tk.call('image', 'names')

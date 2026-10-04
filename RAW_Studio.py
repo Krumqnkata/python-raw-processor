@@ -480,6 +480,21 @@ MUTED = ("#596577", "#9eacbd")
 ACCENT = ("#087c6d", "#20b99b")
 
 
+class PreviewLabel(ctk.CTkLabel):
+    """Detach the native Tk image when clearing a CustomTkinter preview.
+
+    CTkLabel 6.0 leaves the native label unchanged for image=None. Once the
+    old CTkImage is collected, Tk still refers to its deleted pyimage name
+    and rejects the next text/image update. Clear that Tcl option explicitly.
+    """
+
+    def _update_image(self) -> None:
+        if self._image is None:
+            self._label.configure(image="")
+        else:
+            super()._update_image()
+
+
 class AppGUI(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -753,7 +768,7 @@ class AppGUI(ctk.CTk):
         frame.grid_rowconfigure(1, weight=1)
         self._label(frame, title, text_color=MUTED,
                     font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, sticky="ew", pady=8)
-        label = ctk.CTkLabel(frame, text="", text_color=MUTED, corner_radius=8,
+        label = PreviewLabel(frame, text="", text_color=MUTED, corner_radius=8,
                              fg_color=("#eef1f5", "#131a22"), font=ctk.CTkFont(size=15))
         label.grid(row=1, column=0, sticky="nsew")
         if column == 0:
