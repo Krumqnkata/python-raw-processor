@@ -29,7 +29,7 @@ from batch import discover_raws, run_batch, unique_inputs, FolderWatcher
 from studio import (EditSession, PhotoState, BUILTIN_PRESETS, EDIT_FIELDS, EXPORT_FIELDS,
                     save_preset, load_preset, save_lens_profile, load_lens_profile, read_json, params_from_dict)
 from experience import StudioExperience
-from workflow import COPY_GROUPS
+from studio_workflow import COPY_GROUPS
 from imaging import LocalAdjustment
 from raw_engine import (ProcessingCancelled, ProcessingParams, RAW_EXTENSIONS,
                         RawEngine, PreviewResult)

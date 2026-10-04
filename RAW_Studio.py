@@ -1066,7 +1066,7 @@ class FolderWatcher:
                 emit('watch_error',{'error':str(error)})
             cancel.wait(self.interval)
 
-# ---------- workflow.py ----------
+# ---------- studio_workflow.py ----------
 """Simple workflow policies and immutable snapshots for background recovery saves."""
 from dataclasses import asdict, replace
 from pathlib import Path

@@ -9,7 +9,7 @@ import customtkinter as ctk
 from studio import EditSession, BUILTIN_PRESETS, EDIT_FIELDS, EXPORT_FIELDS, atomic_json, read_json
 from raw_engine import ProcessingParams, RAW_EXTENSIONS
 from batch import discover_raws, unique_inputs
-from workflow import (EXPORT_PRESETS, automatic_params, config_directory, load_preferences,
+from studio_workflow import (EXPORT_PRESETS, automatic_params, config_directory, load_preferences,
                       session_snapshot, write_snapshot, export_description)
 
 UX_CARD = ('#ffffff','#1a212a')

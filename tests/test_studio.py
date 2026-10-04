@@ -222,7 +222,7 @@ def test_standalone_matches_modular_pipeline(dng_path,tmp_path):
 
 
 def test_recovery_snapshot_preserves_origin_and_frozen_edits(tmp_path, dng_path):
-    from workflow import session_snapshot, write_snapshot
+    from studio_workflow import session_snapshot, write_snapshot
     from studio import EditSession, read_json
     from raw_engine import ProcessingParams
     session=EditSession();session.add([dng_path]);photo=session.photos[str(dng_path)]
@@ -260,7 +260,7 @@ def test_preview_cache_updates_corrections_and_invalidates_source(dng_path, tmp_
 
 
 def test_automatic_workflow_preserves_geometry_and_export():
-    from workflow import automatic_params, EXPORT_PRESETS
+    from studio_workflow import automatic_params, EXPORT_PRESETS
     from raw_engine import ProcessingParams
     original=ProcessingParams(exposure_ev=1.5,temperature=.4,crop=(.1,.1,.9,.9),rotation=1,max_edge=123)
     result=automatic_params(original)
