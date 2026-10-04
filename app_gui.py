@@ -167,7 +167,7 @@ class AppGUI(ctk.CTk):
                     text_color=MUTED).pack(fill="x", padx=12, pady=(20, 8))
 
     def _button(self, parent, text: str, command: Callable, **kwargs):
-        button = ctk.CTkButton(parent, text=text, command=command, height=35,
+        button = ctk.CTkButton(parent, text=text, command=lambda:self._ui_action(command), height=35,
                                corner_radius=8, **kwargs)
         button.pack(fill="x", padx=12, pady=4)
         self._locked_widgets.append(button)
@@ -230,7 +230,7 @@ class AppGUI(ctk.CTk):
         self.file_count_label = self._label(controls,'0 избрани снимки',text_color=MUTED)
         self.file_count_label.pack(fill='x',padx=12)
         self._button(controls,'Изчисти списъка',self._clear_files)
-        preset = ctk.CTkOptionMenu(controls,values=list(BUILTIN_PRESETS),variable=self.preset_var,command=self._apply_builtin)
+        preset = ctk.CTkOptionMenu(controls,values=list(BUILTIN_PRESETS),variable=self.preset_var,command=lambda name:self._ui_action(self._apply_builtin,name))
         preset.pack(fill='x',padx=12,pady=8)
         self._setting_widgets.append(preset)
         self._button(controls,'Запази собствен preset…',self._save_preset)
@@ -376,7 +376,7 @@ class AppGUI(ctk.CTk):
         selection.grid_columnconfigure(0, weight=1)
         self.file_menu = ctk.CTkOptionMenu(selection, values=["Няма избрани файлове"],
                                           variable=self.selected_var,
-                                          command=lambda _: self._selection_changed())
+                                          command=lambda _: self._ui_action(self._selection_changed))
         self.file_menu.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         self._locked_widgets.append(self.file_menu)
         self.preview_button = ctk.CTkButton(selection, text="Обнови прегледа", width=150,
@@ -411,7 +411,7 @@ class AppGUI(ctk.CTk):
         toolbar = ctk.CTkFrame(main,fg_color='transparent')
         toolbar.grid(row=8,column=0,sticky='ew',pady=4)
         for title,command in [('Побери',lambda:self._set_zoom(None)),('100%',lambda:self._set_zoom(1)),('−',lambda:self._zoom_step(.8)),('+',lambda:self._zoom_step(1.25)),('↶',self._undo),('↷',self._redo)]:
-            ctk.CTkButton(toolbar,text=title,width=54,height=25,command=command).pack(side='left',padx=2)
+            ctk.CTkButton(toolbar,text=title,width=54,height=25,command=lambda fn=command:self._ui_action(fn)).pack(side='left',padx=2)
         self.zoom_label = self._label(toolbar,'Побери',text_color=MUTED)
         self.zoom_label.pack(side='left',padx=8)
         self.split_slider = ctk.CTkSlider(toolbar,from_=0,to=1,number_of_steps=100,command=lambda _:self._render_preview(),width=130)
@@ -464,7 +464,7 @@ class AppGUI(ctk.CTk):
                              fg_color=("#eef1f5", "#131a22"), font=ctk.CTkFont(size=15))
         label.grid(row=1, column=0, sticky="nsew")
         for sequence, handler in [('<ButtonPress-1>',self._mouse_down),('<B1-Motion>',self._mouse_drag),('<ButtonRelease-1>',self._mouse_up),('<MouseWheel>',self._mouse_wheel),('<Button-4>',self._mouse_wheel),('<Button-5>',self._mouse_wheel)]:
-            label._label.bind(sequence,lambda event,box=label,fn=handler:fn(event,box))
+            label._label.bind(sequence,lambda event,box=label,fn=handler:self._ui_action(fn,event,box))
         if column == 0:
             self.before_image_label = label
         else:
@@ -599,7 +599,12 @@ class AppGUI(ctk.CTk):
             self.output_var.set(folder)
 
     def _selection_changed(self) -> None:
-        self._commit_current()
+        try:
+            self._commit_current()
+        except ValueError:
+            original = next((key for key,path in self._file_choices.items() if str(path)==self._active_path),None)
+            if original: self.selected_var.set(original)
+            raise
         path = self._file_choices.get(self.selected_var.get())
         self._active_path = str(path) if path else None
         if self._active_path in self.session.photos:
@@ -1285,7 +1290,7 @@ class AppGUI(ctk.CTk):
             key = str(photo.path)
             thumb = self._thumb_cache.get(key)
             image = ctk.CTkImage(light_image=thumb,dark_image=thumb,size=thumb.size) if thumb else None
-            button = ctk.CTkButton(cell,text=photo.path.name[:17],width=100,height=52,image=image,compound='top',font=ctk.CTkFont(size=10),command=lambda path=photo.path:self._select_photo(path))
+            button = ctk.CTkButton(cell,text=photo.path.name[:17],width=100,height=52,image=image,compound='top',font=ctk.CTkFont(size=10),command=lambda path=photo.path:self._ui_action(self._select_photo,path))
             button._thumbnail = image
             button.pack(fill='x')
             self._gallery_buttons[key] = button
@@ -1354,12 +1359,12 @@ class AppGUI(ctk.CTk):
             def run(event):
                 focused = self.focus_get()
                 if focused and focused.winfo_class() in {'Entry','Text'}: return
-                action()
+                self._ui_action(action)
                 return 'break'
             return run
         for sequence,action in [('<Control-z>',self._undo),('<Control-y>',self._redo),('<Left>',lambda:self._navigate(-1)),('<Right>',lambda:self._navigate(1))]:
             self.bind(sequence,safe(action))
-        self.bind('<Control-s>',lambda event:self._save_project() if not self._busy else None)
+        self.bind('<Control-s>',lambda event:self._ui_action(self._save_project) if not self._busy else None)
 
     def _navigate(self,direction):
         if self._busy in {'batch','scan'} or not self.files: return
@@ -1406,6 +1411,7 @@ class AppGUI(ctk.CTk):
             messagebox.showerror('Продължаване на серия',str(error),parent=self)
 
     def _start_watch(self):
+        self._params()  # Validate before starting an unattended watcher.
         if not self.output_var.get().strip():
             messagebox.showinfo('Автоматичен експорт','Първо избери изходна папка в раздел Експорт.',parent=self)
             return
@@ -1433,9 +1439,14 @@ class AppGUI(ctk.CTk):
         if self._closing: return
         if self._watch_pending and not self._busy and not self._watch_cancel.is_set():
             paths,self._watch_pending = self._watch_pending,[]
-            self._add_files(paths)
-            self._watch_exporting = True
-            self._start_batch(files_override=paths)
+            try:
+                self._add_files(paths)
+                self._watch_exporting = True
+                self._start_batch(files_override=paths)
+            except ValueError as error:
+                self._watch_exporting = False
+                self._stop_watch()
+                self._log('Автоматичният експорт е спрян: '+str(error),'error')
         self._watch_timer = self.after(500,self._drain_watch)
 
 
@@ -1462,3 +1473,13 @@ class AppGUI(ctk.CTk):
         for key,photo in self.session.photos.items(): photo.included = key==self._active_path
         self._project_dirty = True
         self._refresh_gallery()
+
+
+    def _ui_action(self, action, *args):
+        """Keep invalid user edits out of Tk callback tracebacks."""
+        try:
+            return action(*args)
+        except ValueError as error:
+            self._log(str(error),'error')
+            messagebox.showerror('Настройки',str(error),parent=self)
+            return None

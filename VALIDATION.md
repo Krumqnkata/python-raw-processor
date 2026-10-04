@@ -3,7 +3,7 @@
 ## Local checks
 
 - Python 3.12, Linux, actual LibRaw/OpenCV/Pillow, Tcl/Tk 8.6 under Xvfb.
-- 48 engine/batch/editor tests and 11 actual GUI tests: 59 checks in total.
+- 48 engine/batch/editor tests and 12 actual GUI tests: 60 checks in total.
 - Synthetic Bayer DNG is generated and genuinely decoded, rather than mocking RAW input.
 - Standalone/modular output equivalence, source synchronization and compile checks.
 - Actual dark/light screenshots captured and inspected; scrollable tab backgrounds
@@ -26,11 +26,12 @@
 - 100% preview accounts for display scaling; exact rendering retains full image pixels.
 - Native Tk images are detached on clear/switch, preventing deleted pyimage references.
 - GUI project roundtrip, real threaded watcher, paused export and journal restoration.
+- Invalid export values show validation messages and preserve the selected photo.
 
 ## CI
 
 `.github/workflows/tests.yml` runs all 48 backend/editor checks on Windows,
-Linux and macOS with Python 3.12. It also runs all 11 GUI checks on Windows and
+Linux and macOS with Python 3.12. It also runs all 12 GUI checks on Windows and
 Linux, each in a separate process to avoid Tcl interpreter teardown interference.
 
 ## Scope

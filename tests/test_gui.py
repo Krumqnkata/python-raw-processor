@@ -337,3 +337,24 @@ def test_white_balance_eyedropper_applies_neutral_rgb_gains(app,dng_path):
     assert params.wb_gains[0]<1<params.wb_gains[2]
     assert params.temperature==0 and params.tint==0
     pump(app,lambda:app._busy is None and not app._pending_preview)
+
+
+def test_invalid_export_values_show_message_and_preserve_selection(app,dng_path,tmp_path,monkeypatch):
+    from app_gui import messagebox
+    second=tmp_path/'second.DNG'
+    second.write_bytes(dng_path.read_bytes())
+    app._add_files([dng_path,second])
+    pump(app,lambda:app._preview is not None and app._busy is None)
+    errors=[]
+    monkeypatch.setattr(messagebox,'showerror',lambda title,message,**_:errors.append(message))
+    app.max_edge_var.set('not a number')
+    app._ui_action(app._save_project)
+    assert errors and 'цяло число' in errors[-1]
+    original=app.selected_var.get()
+    app.selected_var.set(next(k for k,p in app._file_choices.items() if p==second))
+    app._ui_action(app._selection_changed)
+    assert app._active_path==str(dng_path) and app.selected_var.get()==original
+    app.max_edge_var.set('0')
+    app.template_var.set('../{stem}')
+    app._ui_action(app._apply_builtin,'Естествено')
+    assert len(errors)==3 and 'шаблон' in errors[-1]
